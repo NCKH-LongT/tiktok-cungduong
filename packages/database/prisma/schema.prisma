@@ -36,11 +36,13 @@ model User {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   deletedAt    DateTime?
+  accessUntil  DateTime?
   sessions     AuthSession[]
   channels     LiveChannel[]
   audit        AuditLog[]
   quota        UserQuota?
   roles        UserRole[]
+  paymentOrders PaymentOrder[]
 }
 
 model Role {
@@ -124,6 +126,7 @@ model LiveChannel {
   interactions    AIInteraction[]
   speech          SpeechJob[]
   metrics         UsageMetric[]
+  aiWelcomes      AIWelcome[]
 
   @@unique([ownerId, uniqueId])
   @@index([ownerId, deletedAt])
@@ -242,6 +245,31 @@ model AIInteraction {
   live          LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
 
   @@index([liveId, createdAt])
+}
+
+model AIWelcome {
+  liveId    String      @db.Uuid
+  roomKey   String
+  userKey   String
+  createdAt DateTime    @default(now())
+  live      LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+
+  @@id([liveId, roomKey, userKey])
+}
+
+model PaymentOrder {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @db.Uuid
+  orderCode     BigInt    @unique
+  amount        Int       @default(50000)
+  status        String    @default("PENDING")
+  checkoutUrl   String?
+  paymentLinkId String?
+  createdAt     DateTime  @default(now())
+  paidAt        DateTime?
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model SpeechJob {

@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { createHash, randomBytes } from 'node:crypto';
 import { NestFactory } from '@nestjs/core';
 import { Module, Injectable, Controller, Get, Post, Put, Patch, Delete, Body, Param, Query, Req, Res, UseGuards, CanActivate, ExecutionContext, HttpException, HttpStatus } from '@nestjs/common';
-import { Prisma, PrismaClient, RoleCode, EventSource } from '@prisma/client';
+import { Prisma, PrismaClient, RoleCode, EventSource, type PaymentOrder } from '@prisma/client';
 import argon2 from 'argon2';
 import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
@@ -10,7 +10,9 @@ import { Server } from 'socket.io';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { z } from 'zod';
-import { giftDedupKey, liveEventSchema, shouldAnswerComment, type LiveEvent } from '@cd/shared';
+import type { Webhook, WebhookData } from '@payos/node';
+import { giftDedupKey, hasLiveAccess, liveEventSchema, shouldAnswerComment, type LiveEvent } from '@cd/shared';
+import { DAY_PASS_VND, newOrderCode, payOSClient, settlePaidOrder } from './billing.js';
 import type { Request, Response } from 'express';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -24,7 +26,7 @@ const uuid = z.uuid();
 const loginSchema = z.object({ login: z.string().min(3), password: z.string().min(1), turnstileToken: z.string().optional() });
 const liveSchema = z.object({ uniqueId: z.string().trim().regex(/^@?[a-zA-Z0-9_.]{2,32}$/).transform(value => value.replace(/^@/, '')), title: z.string().min(1).max(100) });
 const simulationSchema = z.object({ eventType: z.enum(['viewer.join','viewer.leave','chat.comment','viewer.like','viewer.share','viewer.follow','gift.received','room.stats']), user: z.object({ id: z.string().max(100), nickname: z.string().max(100), avatarUrl: z.url().optional() }).optional(), payload: z.record(z.string(), z.unknown()).default({}), ai: z.boolean().default(false) });
-type AuthedRequest = Request & { principal?: { id: string; role: RoleCode; sessionId: string } };
+type AuthedRequest = Request & { principal?: { id: string; role: RoleCode; sessionId: string; accessUntil: Date | null } };
 
 @Injectable()
 class Services {
@@ -39,12 +41,16 @@ class Services {
     if (typeof token !== 'string') fail(401, 'Authentication required');
     const session = await this.db.authSession.findUnique({ where: { tokenHash: hash(token) }, include: { user: true } });
     if (!session || session.revokedAt || session.expiresAt < new Date() || !session.user.active || session.user.deletedAt) fail(401, 'Session expired');
-    req.principal = { id: session!.userId, role: session!.user.role, sessionId: session!.id };
+    req.principal = { id: session!.userId, role: session!.user.role, sessionId: session!.id, accessUntil: session!.user.accessUntil };
     return req.principal;
+  }
+  requireLiveAccess(principal: NonNullable<AuthedRequest['principal']>) {
+    if (!hasLiveAccess(principal.role, principal.accessUntil)) fail(402, 'Nạp 50.000₫ để sử dụng LIVE trong 24 giờ');
   }
   async live(id: string, req: AuthedRequest) {
     parse(uuid, id);
     const principal = req.principal ?? await this.auth(req);
+    this.requireLiveAccess(principal);
     const live = await this.db.liveChannel.findFirst({ where: { id, deletedAt: null, ...(principal.role === 'SUPER_ADMIN' ? {} : { ownerId: principal.id }) } });
     if (!live) fail(404, 'LIVE not found');
     return live;
@@ -52,8 +58,9 @@ class Services {
   async overlay(id: string, token: unknown) {
     parse(uuid, id);
     if (typeof token !== 'string' || token.length < 32) fail(401, 'Invalid overlay token');
-    const active = await this.db.overlayToken.findFirst({ where: { liveId: id, tokenHash: hash(token as string), revokedAt: null, live: { deletedAt: null } } });
+    const active = await this.db.overlayToken.findFirst({ where: { liveId: id, tokenHash: hash(token as string), revokedAt: null, live: { deletedAt: null } }, include: { live: { include: { owner: { select: { role: true, accessUntil: true } } } } } });
     if (!active) fail(401, 'Invalid overlay token');
+    if (!hasLiveAccess(active!.live.owner.role, active!.live.owner.accessUntil)) fail(402, 'LIVE access expired');
   }
   async disconnectOverlays(id: string) {
     for (const socket of await this.io?.in(`live:${id}`).fetchSockets() ?? []) {
@@ -72,8 +79,9 @@ class Services {
   }
   async publish(eventInput: unknown, includeSimulatorAI = false) {
     const event = parse(liveEventSchema, eventInput);
-    const live = await this.db.liveChannel.findUnique({ where: { id: event.liveId } });
+    const live = await this.db.liveChannel.findUnique({ where: { id: event.liveId }, include: { owner: { select: { role: true, accessUntil: true } } } });
     if (!live || live.deletedAt) return false;
+    if (!hasLiveAccess(live.owner.role, live.owner.accessUntil)) { if (live.status !== 'stopped') await this.stopLive(live.id); return false; }
     if (event.source === 'tiktok' && live.status !== 'connected') return false;
     const userKey = event.user?.id ?? event.user?.uniqueId ?? null;
     const created = await this.db.liveEvent.createMany({ data: [{ eventId: event.eventId, liveId: event.liveId, sessionId: event.sessionId ?? null, source: event.source, type: event.eventType, userKey, payload: event as object, occurredAt: new Date(event.timestamp) }], skipDuplicates: true });
@@ -102,6 +110,13 @@ class Services {
     if (event.eventType === 'gift.received' && event.payload.repeatEnd === false) return;
     const isJoin = event.eventType === 'viewer.join';
     const userKey = event.user?.id ?? event.user?.uniqueId ?? 'anon';
+    if (isJoin && userKey === 'anon') return;
+    let roomKey: string | undefined;
+    if (isJoin) {
+      const session = event.sessionId ? await this.db.liveSession.findUnique({ where: { id: event.sessionId }, select: { roomId: true } }) : null;
+      roomKey = session?.roomId ?? event.sessionId ?? 'simulator';
+      if (await this.db.aIWelcome.findUnique({ where: { liveId_roomKey_userKey: { liveId: event.liveId, roomKey, userKey } }, select: { liveId: true } })) return;
+    }
     const cooldownKey = `ai:cooldown:${event.liveId}:${event.eventType}:${userKey}`;
     if (!(await this.redis.set(cooldownKey, '1', 'PX', config.cooldownMs, 'NX'))) return;
     const firstComment = event.eventType === 'chat.comment' && !(await this.redis.exists(`ai:comment:answered:${event.liveId}:${userKey}`));
@@ -124,7 +139,15 @@ class Services {
     if (dayCount === 1) await this.redis.expire(dayKey, 172800);
     if (dayCount > (quota?.maxAiPerDay ?? 100)) return;
     const priority = event.eventType === 'gift.received' ? 1 : firstComment ? 2 : isJoin ? 5 : 3;
-    await this.speechQueue.add('generate', { event }, { jobId: hash(event.eventId), priority, delay: isJoin ? 4000 : 0, removeOnComplete: 100, removeOnFail: 100, attempts: 2, backoff: { type: 'exponential', delay: 1000 } });
+    if (isJoin) {
+      const created = await this.db.aIWelcome.createMany({ data: [{ liveId: event.liveId, roomKey: roomKey!, userKey }], skipDuplicates: true });
+      if (!created.count) return;
+    }
+    try { await this.speechQueue.add('generate', { event }, { jobId: hash(event.eventId), priority, delay: isJoin ? 4000 : 0, removeOnComplete: 100, removeOnFail: 100, attempts: 2, backoff: { type: 'exponential', delay: 1000 } }); }
+    catch (error) {
+      if (isJoin && roomKey) await this.db.aIWelcome.deleteMany({ where: { liveId: event.liveId, roomKey, userKey } });
+      throw error;
+    }
     if (firstComment) await this.redis.set(`ai:comment:answered:${event.liveId}:${userKey}`, '1', 'EX', 86400);
   }
   async leaderboard(id: string, includeSimulator = false) {
@@ -139,6 +162,12 @@ class Services {
 class SessionGuard implements CanActivate {
   constructor(private readonly services: Services) {}
   async canActivate(context: ExecutionContext) { await this.services.auth(context.switchToHttp().getRequest<AuthedRequest>()); return true; }
+}
+
+@Injectable()
+class PaidGuard implements CanActivate {
+  constructor(private readonly services: Services) {}
+  canActivate(context: ExecutionContext) { this.services.requireLiveAccess(context.switchToHttp().getRequest<AuthedRequest>().principal!); return true; }
 }
 
 @Controller()
@@ -176,6 +205,77 @@ class AuthController {
   @Post('change-password') @UseGuards(SessionGuard) async changePassword(@Req() req: AuthedRequest, @Body() body: unknown) { const data = parse(z.object({ oldPassword: z.string(), newPassword: z.string().min(16) }), body); const user = await this.s.db.user.findUniqueOrThrow({ where: { id: req.principal!.id } }); if (!(await argon2.verify(user.passwordHash, data.oldPassword))) fail(401, 'Invalid password'); await this.s.db.$transaction([this.s.db.user.update({ where: { id: user.id }, data: { passwordHash: await argon2.hash(data.newPassword, { type: argon2.argon2id }) } }), this.s.db.authSession.updateMany({ where: { userId: user.id }, data: { revokedAt: new Date() } })]); return { ok: true }; }
 }
 
+@Controller('billing')
+class BillingController {
+  constructor(private readonly s: Services) {}
+
+  @Get('status') @UseGuards(SessionGuard) async status(@Req() req: AuthedRequest) {
+    const userId = req.principal!.id;
+    const pending = await this.s.db.paymentOrder.findFirst({ where: { userId, status: 'PENDING', checkoutUrl: { not: null } }, orderBy: { createdAt: 'desc' } });
+    const payOS = payOSClient();
+    if (pending && payOS && await this.s.redis.set(`billing:sync:${pending.id}`, '1', 'EX', 10, 'NX')) {
+      try {
+        const link = await payOS.paymentRequests.get(Number(pending.orderCode));
+        if (link.orderCode === Number(pending.orderCode) && link.amount === pending.amount) {
+          if (link.status === 'PAID') await settlePaidOrder(this.s.db, pending.orderCode, link.amountPaid, link.id);
+          else if (['CANCELLED', 'EXPIRED', 'FAILED'].includes(link.status)) await this.s.db.paymentOrder.updateMany({ where: { id: pending.id, status: 'PENDING' }, data: { status: link.status } });
+        }
+      } catch (error) { console.warn('payOS payment status sync failed:', error instanceof Error ? error.message : 'unknown'); }
+    }
+    const [user, current] = await Promise.all([
+      this.s.db.user.findUniqueOrThrow({ where: { id: userId }, select: { role: true, accessUntil: true } }),
+      this.s.db.paymentOrder.findFirst({ where: { userId, status: 'PENDING', checkoutUrl: { not: null }, createdAt: { gt: new Date(Date.now() - 15 * 60000) } }, orderBy: { createdAt: 'desc' }, select: { orderCode: true, checkoutUrl: true } }),
+    ]);
+    return { active: hasLiveAccess(user.role, user.accessUntil), adminFree: ['ADMIN', 'SUPER_ADMIN'].includes(user.role), paymentAvailable: Boolean(payOS), accessUntil: user.accessUntil, priceVnd: DAY_PASS_VND, durationHours: 24, pendingCheckoutUrl: current?.checkoutUrl ?? null, pendingOrderCode: current?.orderCode.toString() ?? null };
+  }
+
+  @Post('checkout') @UseGuards(SessionGuard) async checkout(@Req() req: AuthedRequest) {
+    if (['ADMIN', 'SUPER_ADMIN'].includes(req.principal!.role)) fail(409, 'Admin access is already free');
+    const payOS = payOSClient();
+    if (!payOS) fail(503, 'payOS chưa được cấu hình');
+    const lockKey = `billing:create:${req.principal!.id}`;
+    const lockToken = randomBytes(16).toString('hex');
+    if (await this.s.redis.set(lockKey, lockToken, 'EX', 30, 'NX') !== 'OK') fail(409, 'Đang tạo liên kết thanh toán, vui lòng đợi');
+    try {
+      const existing = await this.s.db.paymentOrder.findFirst({ where: { userId: req.principal!.id, status: 'PENDING', checkoutUrl: { not: null }, createdAt: { gt: new Date(Date.now() - 14 * 60000) } }, orderBy: { createdAt: 'desc' } });
+      if (existing?.checkoutUrl) return { checkoutUrl: existing.checkoutUrl, orderCode: existing.orderCode.toString() };
+      const appUrl = process.env.PUBLIC_APP_URL ?? 'http://localhost:8090';
+      let order: PaymentOrder | null = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try { order = await this.s.db.paymentOrder.create({ data: { userId: req.principal!.id, orderCode: newOrderCode(), amount: DAY_PASS_VND } }); break; }
+        catch (error) { if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error; }
+      }
+      if (!order) fail(503, 'Không thể tạo mã đơn hàng');
+      const createdOrder = order!;
+      try {
+        const link = await payOS!.paymentRequests.create({ orderCode: Number(createdOrder.orderCode), amount: DAY_PASS_VND, description: `CD24 ${createdOrder.orderCode}`, returnUrl: new URL('/?payment=success', appUrl).toString(), cancelUrl: new URL('/?payment=cancel', appUrl).toString(), expiredAt: Math.floor(Date.now() / 1000) + 15 * 60 });
+        if (link.orderCode !== Number(createdOrder.orderCode) || link.amount !== DAY_PASS_VND || new URL(link.checkoutUrl).protocol !== 'https:') throw new Error('Invalid payOS checkout response');
+        await this.s.db.paymentOrder.update({ where: { id: createdOrder.id }, data: { checkoutUrl: link.checkoutUrl, paymentLinkId: link.paymentLinkId } });
+        return { checkoutUrl: link.checkoutUrl, orderCode: createdOrder.orderCode.toString() };
+      } catch (error) {
+        await this.s.db.paymentOrder.updateMany({ where: { id: createdOrder.id, status: 'PENDING' }, data: { status: 'FAILED' } });
+        console.error('payOS checkout creation failed:', error instanceof Error ? error.message : 'unknown');
+        fail(502, 'Không tạo được liên kết thanh toán payOS');
+      }
+    } finally {
+      await this.s.redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lockKey, lockToken).catch(() => {});
+    }
+  }
+
+  @Post('payos/webhook') async webhook(@Body() body: unknown) {
+    const payOS = payOSClient();
+    if (!payOS) fail(503, 'payOS chưa được cấu hình');
+    let data: WebhookData;
+    try { data = await payOS!.webhooks.verify(body as Webhook); }
+    catch { fail(400, 'Invalid payOS webhook signature'); }
+    const envelope = body as { code?: string; success?: boolean };
+    if (envelope.code === '00' && envelope.success === true && data!.code === '00' && data!.currency === 'VND' && Number.isSafeInteger(data!.orderCode)) {
+      await settlePaidOrder(this.s.db, BigInt(data!.orderCode), data!.amount, data!.paymentLinkId);
+    }
+    return { code: '00', desc: 'success' };
+  }
+}
+
 @Controller('users') @UseGuards(SessionGuard)
 class UsersController {
   constructor(private readonly s: Services) {}
@@ -186,7 +286,7 @@ class UsersController {
   @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.admin(req); parse(uuid, id); const target = await this.s.db.user.findUnique({ where: { id } }); if (!target || target.role === 'SUPER_ADMIN') fail(403, 'Forbidden'); const now = new Date(); await this.s.db.$transaction([this.s.db.overlayToken.updateMany({ where: { live: { ownerId: id } }, data: { revokedAt: now } }), this.s.db.liveChannel.updateMany({ where: { ownerId: id }, data: { deletedAt: now, status: 'stopped' } }), this.s.db.user.update({ where: { id }, data: { active: false, deletedAt: now } }), this.s.db.authSession.updateMany({ where: { userId: id }, data: { revokedAt: now } }), this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.delete', targetId: id } })]); return { ok: true }; }
 }
 
-@Controller('lives') @UseGuards(SessionGuard)
+@Controller('lives') @UseGuards(SessionGuard, PaidGuard)
 class LivesController {
   constructor(private readonly s: Services) {}
   private editable(req: AuthedRequest) { if (req.principal!.role === 'VIEWER') fail(403, 'Read only'); }
@@ -302,7 +402,7 @@ class OverlayController {
   }
 }
 
-@Module({ controllers: [HealthController, AuthController, UsersController, LivesController, OverlayController], providers: [Services, SessionGuard] })
+@Module({ controllers: [HealthController, AuthController, BillingController, UsersController, LivesController, OverlayController], providers: [Services, SessionGuard, PaidGuard] })
 class AppModule {}
 
 async function main() {
@@ -310,7 +410,7 @@ async function main() {
   app.use(helmet()); app.use(cookieParser());
   const origins = (process.env.CORS_ORIGINS ?? process.env.PUBLIC_APP_URL ?? 'http://localhost:3000').split(',');
   app.enableCors({ origin: origins, credentials: true });
-  app.use((req: Request, _res: Response, next: () => void) => { if (['POST','PUT','PATCH','DELETE'].includes(req.method) && req.headers.origin && !origins.includes(req.headers.origin)) fail(403, 'Invalid origin'); next(); });
+  app.use((req: Request, _res: Response, next: () => void) => { if (req.path !== '/billing/payos/webhook' && ['POST','PUT','PATCH','DELETE'].includes(req.method) && req.headers.origin && !origins.includes(req.headers.origin)) fail(403, 'Invalid origin'); next(); });
   const s = app.get(Services);
   await s.db.liveChannel.updateMany({ where: { status: { in: ['connecting', 'connected', 'unavailable'] } }, data: { status: 'stopped' } });
   const server = app.getHttpServer();

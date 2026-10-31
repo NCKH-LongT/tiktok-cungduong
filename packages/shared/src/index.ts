@@ -13,6 +13,10 @@ export const liveEventSchema = z.object({
 });
 export type LiveEvent = z.infer<typeof liveEventSchema>;
 
+export function hasLiveAccess(role: string, accessUntil: Date | string | null | undefined, now = new Date()): boolean {
+  return role === 'SUPER_ADMIN' || role === 'ADMIN' || Boolean(accessUntil && new Date(accessUntil).getTime() > now.getTime());
+}
+
 export function giftDedupKey(event: LiveEvent): string {
   const p = event.payload;
   const combo = typeof p.comboId === 'string' ? p.comboId : '';
@@ -24,6 +28,7 @@ export function shouldAnswerComment(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   const text = value.normalize('NFKC').trim().toLowerCase();
   if (!text || text.length > 300) return false;
+  if ((text.match(/[\p{L}\p{N}]+/gu)?.length ?? 0) < 2) return false;
   if (/(https?:\/\/|www\.|api.?key|mật khẩu|password|system.?prompt|ignore previous|bỏ qua hướng dẫn|tiết lộ bí mật)/i.test(text)) return false;
   if (/(.)\1{12,}/u.test(text)) return false;
   return /[\p{L}\p{N}]/u.test(text);

@@ -1,15 +1,141 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-type User = { id:string; email:string; role:string };
-type Live = { id:string; title:string; uniqueId:string; status:string };
-async function api(path:string, init?:RequestInit) { const r=await fetch('/api'+path,{...init,credentials:'include',headers:{'content-type':'application/json',...init?.headers}}); const d=await r.json(); if(!r.ok) throw new Error(d.error??'Request failed'); return d; }
-type Turnstile={render:(element:HTMLElement,options:Record<string,unknown>)=>string;remove:(id:string)=>void};
-function TurnstileWidget({siteKey,onToken}:{siteKey:string;onToken:(token:string)=>void}){const holder=useRef<HTMLDivElement>(null);useEffect(()=>{const win=window as typeof window & {turnstile?:Turnstile};let widgetId:string|undefined,active=true;const render=()=>{if(active&&holder.current&&win.turnstile&&!widgetId)widgetId=win.turnstile.render(holder.current,{sitekey:siteKey,callback:onToken,'expired-callback':()=>onToken('')})};const script=document.createElement('script');script.src='https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';script.async=true;script.onload=render;document.head.appendChild(script);render();return()=>{active=false;if(widgetId)win.turnstile?.remove(widgetId);script.remove()}},[siteKey,onToken]);return <div ref={holder} aria-label="Cloudflare Turnstile"/>}
-export default function Home(){
- const [user,setUser]=useState<User|null>(null),[lives,setLives]=useState<Live[]>([]),[login,setLogin]=useState(''),[password,setPassword]=useState(''),[captcha,setCaptcha]=useState(''),[siteKey,setSiteKey]=useState(''),[title,setTitle]=useState(''),[uniqueId,setUniqueId]=useState(''),[error,setError]=useState(''),[loading,setLoading]=useState(true);
- async function reload(){try{const me=await api('/auth/me');setUser(me);setLives(await api('/lives'));}catch{setUser(null);}finally{setLoading(false)}}
- useEffect(()=>{void reload();void api('/public-config').then(d=>setSiteKey(d.turnstileSiteKey??'')).catch(()=>{})},[]);
- async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{await api('/auth/login',{method:'POST',body:JSON.stringify({login,password,turnstileToken:captcha})});setPassword('');await reload()}catch(e){setError(String(e))}}
- async function add(e:React.FormEvent){e.preventDefault();setError('');try{await api('/lives',{method:'POST',body:JSON.stringify({title,uniqueId})});setTitle('');setUniqueId('');await reload()}catch(e){setError(String(e))}}
- return <main className="shell"><div className="top"><div><h1>Chánh Điện AI Live</h1><p className="muted">Điều khiển nhiều TikTok LIVE trong một không gian.</p></div>{user&&<button onClick={async()=>{await api('/auth/logout',{method:'POST'});setUser(null)}}>Đăng xuất</button>}</div>{loading?<p>Đang tải...</p>:!user?<section className="card" style={{maxWidth:460}}><h2>Đăng nhập</h2><form className="stack" onSubmit={signIn}><label>Email hoặc tên đăng nhập<input value={login} onChange={e=>setLogin(e.target.value)} required/></label><label>Mật khẩu<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>{siteKey&&<TurnstileWidget siteKey={siteKey} onToken={setCaptcha}/>}<button disabled={Boolean(siteKey&&!captcha)}>Đăng nhập</button></form></section>:<><div className="row"><span className="pill">{user.role}</span><span>{user.email}</span>{['ADMIN','SUPER_ADMIN'].includes(user.role)&&<a href="/admin">Quản trị →</a>}</div><h2 style={{marginTop:30}}>LIVE của bạn</h2><div className="grid">{lives.map(l=><a key={l.id} className="card" href={'/live/'+l.id}><h3>{l.title}</h3><p>@{l.uniqueId}</p><span className="pill">{l.status}</span><p className="muted">Mở bảng điều khiển →</p></a>)}</div>{user.role!=='VIEWER'&&<section className="card" style={{marginTop:25,maxWidth:550}}><h3>Thêm kênh LIVE</h3><form className="stack" onSubmit={add}><label>Tên hiển thị<input value={title} onChange={e=>setTitle(e.target.value)} required/></label><label>TikTok username<input value={uniqueId} onChange={e=>setUniqueId(e.target.value)} required placeholder="username"/></label><button>Tạo LIVE</button></form></section>}</>}{error&&<p className="error">{error}</p>}</main>
+
+type User = { id: string; email: string; role: string };
+type Live = { id: string; title: string; uniqueId: string; status: string };
+type Billing = { active: boolean; adminFree: boolean; paymentAvailable: boolean; accessUntil: string | null; priceVnd: number; durationHours: number; pendingCheckoutUrl: string | null };
+
+async function api(path: string, init?: RequestInit) {
+  const response = await fetch('/api' + path, { ...init, credentials: 'include', headers: { 'content-type': 'application/json', ...init?.headers } });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error ?? 'Request failed');
+  return data;
+}
+
+type Turnstile = { render: (element: HTMLElement, options: Record<string, unknown>) => string; remove: (id: string) => void };
+function TurnstileWidget({ siteKey, onToken }: { siteKey: string; onToken: (token: string) => void }) {
+  const holder = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const win = window as typeof window & { turnstile?: Turnstile };
+    let widgetId: string | undefined, active = true;
+    const render = () => { if (active && holder.current && win.turnstile && !widgetId) widgetId = win.turnstile.render(holder.current, { sitekey: siteKey, callback: onToken, 'expired-callback': () => onToken('') }); };
+    const script = document.createElement('script');
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    script.async = true;
+    script.onload = render;
+    document.head.appendChild(script);
+    render();
+    return () => { active = false; if (widgetId) win.turnstile?.remove(widgetId); script.remove(); };
+  }, [siteKey, onToken]);
+  return <div ref={holder} aria-label="Cloudflare Turnstile" />;
+}
+
+export default function Home() {
+  const [user, setUser] = useState<User | null>(null);
+  const [billing, setBilling] = useState<Billing | null>(null);
+  const [lives, setLives] = useState<Live[]>([]);
+  const [login, setLogin] = useState('');
+  const [password, setPassword] = useState('');
+  const [captcha, setCaptcha] = useState('');
+  const [siteKey, setSiteKey] = useState('');
+  const [title, setTitle] = useState('');
+  const [uniqueId, setUniqueId] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
+
+  async function reload() {
+    try {
+      const me = await api('/auth/me') as User;
+      setUser(me);
+      const status = await api('/billing/status') as Billing;
+      setBilling(status);
+      setLives(status.active ? await api('/lives') as Live[] : []);
+      if (status.active && window.location.search.includes('payment=')) window.history.replaceState(null, '', '/');
+    } catch (cause) {
+      if (String(cause).includes('Authentication required') || String(cause).includes('Session expired')) {
+        setUser(null); setBilling(null); setLives([]);
+      } else setError(String(cause));
+    } finally { setLoading(false); }
+  }
+
+  useEffect(() => {
+    void reload();
+    void api('/public-config').then(data => setSiteKey(data.turnstileSiteKey ?? '')).catch(() => {});
+    const refresh = () => { if (document.visibilityState === 'visible') void reload(); };
+    document.addEventListener('visibilitychange', refresh);
+    const returning = window.location.search.includes('payment=');
+    let count = 0;
+    const timer = returning ? window.setInterval(() => { if (++count <= 20) void reload(); }, 3000) : undefined;
+    return () => { document.removeEventListener('visibilitychange', refresh); if (timer) clearInterval(timer); };
+  }, []);
+
+  async function signIn(event: React.FormEvent) {
+    event.preventDefault(); setError('');
+    try {
+      await api('/auth/login', { method: 'POST', body: JSON.stringify({ login, password, turnstileToken: captcha }) });
+      setPassword(''); await reload();
+    } catch (cause) { setError(String(cause)); }
+  }
+  async function add(event: React.FormEvent) {
+    event.preventDefault(); setError('');
+    try {
+      await api('/lives', { method: 'POST', body: JSON.stringify({ title, uniqueId }) });
+      setTitle(''); setUniqueId(''); await reload();
+    } catch (cause) { setError(String(cause)); }
+  }
+  async function checkout() {
+    setError(''); setCheckoutBusy(true);
+    try {
+      const result = await api('/billing/checkout', { method: 'POST', body: '{}' }) as { checkoutUrl: string };
+      window.location.assign(result.checkoutUrl);
+    } catch (cause) { setError(String(cause)); setCheckoutBusy(false); }
+  }
+  async function logout() {
+    await api('/auth/logout', { method: 'POST' });
+    setUser(null); setBilling(null); setLives([]);
+  }
+
+  return <main className="shell">
+    <div className="top">
+      <div><h1>Chánh Điện AI Live</h1><p className="muted">Điều khiển nhiều TikTok LIVE trong một không gian.</p></div>
+      {user && <button onClick={() => void logout()}>Đăng xuất</button>}
+    </div>
+    {loading ? <p>Đang tải...</p> : !user ? <section className="card" style={{ maxWidth: 460 }}>
+      <h2>Đăng nhập</h2>
+      <form className="stack" onSubmit={signIn}>
+        <label>Email hoặc tên đăng nhập<input value={login} onChange={event => setLogin(event.target.value)} required /></label>
+        <label>Mật khẩu<input type="password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
+        {siteKey && <TurnstileWidget siteKey={siteKey} onToken={setCaptcha} />}
+        <button disabled={Boolean(siteKey && !captcha)}>Đăng nhập</button>
+      </form>
+    </section> : <>
+      <div className="row"><span className="pill">{user.role}</span><span>{user.email}</span>{['ADMIN', 'SUPER_ADMIN'].includes(user.role) && <a href="/admin">Quản trị →</a>}</div>
+      {billing && <section className="card" style={{ marginTop: 24, maxWidth: 600 }}>
+        <h2>Gói sử dụng LIVE</h2>
+        {billing.adminFree ? <p className="success">Tài khoản quản trị được sử dụng miễn phí.</p> :
+          <p className={billing.active ? 'success' : 'muted'}>{billing.active ? 'Đang sử dụng' : 'Chưa có gói sử dụng hoặc gói đã hết hạn'}{billing.accessUntil ? ' · Hạn đến ' + new Date(billing.accessUntil).toLocaleString('vi-VN') : ''}</p>}
+        {!billing.adminFree && <div className="stack">
+          <p>50.000₫ cho 24 giờ sử dụng. Gói mua thêm sẽ nối tiếp thời gian còn lại.</p>
+          <div className="row"><button disabled={checkoutBusy || !billing.paymentAvailable} onClick={() => void checkout()}>{checkoutBusy ? 'Đang tạo thanh toán…' : billing.active ? 'Nạp thêm 1 ngày' : 'Nạp 50.000₫ qua payOS'}</button>
+            {billing.pendingCheckoutUrl && <a href={billing.pendingCheckoutUrl}>Tiếp tục thanh toán →</a>}</div>
+          {!billing.paymentAvailable && <p className="error">Thanh toán payOS chưa được cấu hình trên máy chủ.</p>}
+          <p className="muted">Quyền sử dụng được cập nhật sau khi payOS xác nhận thanh toán. Nếu vừa thanh toán, hãy đợi vài giây hoặc tải lại trang.</p>
+        </div>}
+      </section>}
+      {billing?.active && <>
+        <h2 style={{ marginTop: 30 }}>LIVE của bạn</h2>
+        <div className="grid">{lives.map(live => <a key={live.id} className="card" href={'/live/' + live.id}><h3>{live.title}</h3><p>@{live.uniqueId}</p><span className="pill">{live.status}</span><p className="muted">Mở bảng điều khiển →</p></a>)}</div>
+        {user.role !== 'VIEWER' && <section className="card" style={{ marginTop: 25, maxWidth: 550 }}>
+          <h3>Thêm kênh LIVE</h3>
+          <form className="stack" onSubmit={add}>
+            <label>Tên hiển thị<input value={title} onChange={event => setTitle(event.target.value)} required /></label>
+            <label>TikTok username<input value={uniqueId} onChange={event => setUniqueId(event.target.value)} required placeholder="username" /></label>
+            <button>Tạo LIVE</button>
+          </form>
+        </section>}
+      </>}
+    </>}
+    {error && <p className="error">{error}</p>}
+  </main>;
 }

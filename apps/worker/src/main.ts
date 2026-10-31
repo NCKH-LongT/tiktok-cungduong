@@ -5,7 +5,7 @@ import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import { TikTokLiveConnection, WebcastEvent, ControlEvent } from 'tiktok-live-connector';
-import type { LiveEvent } from '@cd/shared';
+import { hasLiveAccess, type LiveEvent } from '@cd/shared';
 import { asNumber, asRecord, asString, normalizeTikTokComment, normalizeTikTokGift, normalizeTikTokUser } from './tiktok-events.js';
 import { addressViewer } from './ai-text.js';
 
@@ -32,8 +32,8 @@ async function runTikTok() {
   async function unavailable(liveId: string) { const changed = await db.liveChannel.updateMany({ where: { id: liveId, status: { in: ['connecting', 'connected'] } }, data: { status: 'unavailable' } }); if (changed.count) await redis.publish('connector.status', JSON.stringify({ liveId, status: 'unavailable' })); }
   async function connect(liveId: string, uniqueId: string) {
     if (connections.has(liveId)) return;
-    const requested = await db.liveChannel.findUnique({ where: { id: liveId }, select: { status: true } });
-    if (requested?.status !== 'connecting') return;
+    const requested = await db.liveChannel.findUnique({ where: { id: liveId }, select: { status: true, owner: { select: { role: true, accessUntil: true } } } });
+    if (requested?.status !== 'connecting' || !hasLiveAccess(requested.owner.role, requested.owner.accessUntil)) return;
     if (await redis.set(`connector:lock:${liveId}`, id, 'EX', 30, 'NX') !== 'OK') return;
     const session = await db.liveSession.create({ data: { liveId } });
     const client = new TikTokLiveConnection(uniqueId, { processInitialData: false, signApiKey: process.env.TIKTOK_SIGN_API_KEY || undefined }) as TikTokLiveConnection & EventEmitter;
@@ -59,23 +59,29 @@ async function runTikTok() {
     client.on(WebcastEvent.STREAM_END, () => { if (connections.has(liveId)) void (async () => { await disconnect(liveId); await unavailable(liveId); })(); });
     client.on(ControlEvent.ERROR, error => { console.error(`TikTok connection error for @${uniqueId}:`, errorMessage(error)); });
     client.on(ControlEvent.DISCONNECTED, () => { if (connections.has(liveId)) void (async () => { await disconnect(liveId); await unavailable(liveId); })(); });
-    try { if ((await db.liveChannel.findUnique({ where: { id: liveId }, select: { status: true } }))?.status !== 'connecting') { await disconnect(liveId); return; } await client.connect(); if (!connections.has(liveId)) return; const connected = await db.liveChannel.updateMany({ where: { id: liveId, status: 'connecting' }, data: { status: 'connected', lastConnectedAt: new Date() } }); if (!connected.count) { await disconnect(liveId); return; } await db.liveSession.update({ where: { id: session.id }, data: { roomId: client.roomId } }); await redis.publish('connector.status', JSON.stringify({ liveId, status: 'connected' })); await publish(event(liveId, session.id, 'room.connected', {}, { roomId: client.roomId })); }
+    try { if ((await db.liveChannel.findUnique({ where: { id: liveId }, select: { status: true } }))?.status !== 'connecting') { await disconnect(liveId); return; } await client.connect(); if (!connections.has(liveId)) return; const current = await db.liveChannel.findUnique({ where: { id: liveId }, select: { status: true, owner: { select: { role: true, accessUntil: true } } } }); if (current?.status !== 'connecting' || !hasLiveAccess(current.owner.role, current.owner.accessUntil)) { await disconnect(liveId); return; } const connected = await db.liveChannel.updateMany({ where: { id: liveId, status: 'connecting' }, data: { status: 'connected', lastConnectedAt: new Date() } }); if (!connected.count) { await disconnect(liveId); return; } await db.liveSession.update({ where: { id: session.id }, data: { roomId: client.roomId } }); await redis.publish('connector.status', JSON.stringify({ liveId, status: 'connected' })); await publish(event(liveId, session.id, 'room.connected', {}, { roomId: client.roomId })); }
     catch (error) { console.error(`TikTok connection failed for @${uniqueId}:`, errorMessage(error)); await disconnect(liveId); await unavailable(liveId); }
   }
   while (!stopping) {
     if (process.env.TIKTOK_CONNECTOR_MODE === 'tiktok') {
-      const channels = await db.liveChannel.findMany({ where: { status: { in: ['connecting','connected'] }, deletedAt: null } });
-      const wanted = new Set(channels.map(x => x.id));
+      const channels = await db.liveChannel.findMany({ where: { status: { in: ['connecting','connected'] }, deletedAt: null }, include: { owner: { select: { role: true, accessUntil: true } } } });
+      const expired = channels.filter(channel => !hasLiveAccess(channel.owner.role, channel.owner.accessUntil));
+      for (const channel of expired) {
+        await db.liveChannel.updateMany({ where: { id: channel.id, status: { in: ['connecting', 'connected'] } }, data: { status: 'stopped' } });
+        await redis.publish('connector.status', JSON.stringify({ liveId: channel.id, status: 'stopped' }));
+      }
+      const eligible = channels.filter(channel => hasLiveAccess(channel.owner.role, channel.owner.accessUntil));
+      const wanted = new Set(eligible.map(x => x.id));
       for (const [liveId, active] of connections) {
         if (!wanted.has(liveId)) { await disconnect(liveId); continue; }
         if (await redis.get(`connector:lock:${liveId}`) !== id) { await disconnect(liveId); await unavailable(liveId); continue; }
         if (!active.client.isConnected || Date.now() - active.lastMessageAt > 120000) {
-          console.warn(`TikTok connection stale for @${channels.find(channel => channel.id === liveId)?.uniqueId ?? liveId}; reconnecting`);
+          console.warn(`TikTok connection stale for @${eligible.find(channel => channel.id === liveId)?.uniqueId ?? liveId}; reconnecting`);
           await disconnect(liveId); await unavailable(liveId); continue;
         }
         await redis.expire(`connector:lock:${liveId}`, 30);
       }
-      for (const channel of channels) if (channel.status === 'connecting' && !connections.has(channel.id)) await connect(channel.id, channel.uniqueId);
+      for (const channel of eligible) if (channel.status === 'connecting' && !connections.has(channel.id)) await connect(channel.id, channel.uniqueId);
     }
     await new Promise(resolve => setTimeout(resolve, 5000));
   }
@@ -100,8 +106,8 @@ async function runAI() {
   const worker = new Worker('speech', async job => {
     const input = job.data.event as LiveEvent;
     if (input.source === 'tiktok') {
-      const live = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { status: true } });
-      if (live?.status !== 'connected') return;
+      const live = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { status: true, owner: { select: { role: true, accessUntil: true } } } });
+      if (live?.status !== 'connected' || !hasLiveAccess(live.owner.role, live.owner.accessUntil)) return;
     }
     const config = await db.aIConfiguration.findUnique({ where: { liveId: input.liveId } });
     if (!config?.enabled) return;
@@ -163,8 +169,8 @@ async function runAI() {
       }
     }
     if (input.source === 'tiktok') {
-      const live = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { status: true } });
-      if (live?.status !== 'connected') return;
+      const live = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { status: true, owner: { select: { role: true, accessUntil: true } } } });
+      if (live?.status !== 'connected' || !hasLiveAccess(live.owner.role, live.owner.accessUntil)) return;
     }
     await redis.publish('speech.ready', JSON.stringify({ liveId: input.liveId, text, audio, sourceEventId: input.eventId, source: input.source }));
   }, { connection: redis, concurrency: 1 });
