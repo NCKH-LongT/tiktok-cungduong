@@ -13,7 +13,7 @@ This repository is a working foundation and simulator vertical slice, **not a co
 | Scene animation | Updated background, character sprite and Buddhist badges integrated | Headless Chrome rendered the updated temple background, a kneeling viewer and a layered name badge. Random ambient bows are implemented; OBS appearance and performance benchmark still need full verification. |
 | Leaderboard | Real gift rows only | Simulator gifts excluded; retention controls pending |
 | Music and mixer | Partial | YouTube IFrame Player, serialized speech playback and volume ducking implemented; real browser/OBS audio behavior and full mixer channels still need verification |
-| Docker Compose and Jenkins | Compose verified locally | Application image built; all Compose services started; Nginx smoke passed on port 8080. Jenkins pipeline and HTTPS deployment still need target infrastructure verification. |
+| Docker Compose and Jenkins | Compose and CI helper scripts verified locally | Application image built; all Compose services started; Nginx smoke passed on port 8080. Jenkins now gates all stages to `main`, archives one Docker cache file and retains three numbered CI images. A real Buildx probe confirmed local cache export/import and a cache hit; shell helper tests covered retention, logging and no-build deployment. The target Jenkins server and HTTPS deployment still need infrastructure verification. |
 | Security hardening | Partial | Secret encryption, CSRF token, full RBAC, data retention, load tests pending |
 
 The simulator is never counted as a real TikTok LIVE. Google TTS produced MP3 in the local Compose smoke test; audible output in OBS remains unverified.

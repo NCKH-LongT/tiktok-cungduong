@@ -7,6 +7,9 @@ coverage/
 !.env.example
 *.log
 *.tsbuildinfo
+.docker-build-cache.tar
+.docker-cache-work.*/
+ci-logs/
 secrets/
 gcp-tts-sa.json
 !.gitkeep

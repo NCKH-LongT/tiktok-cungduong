@@ -24,7 +24,7 @@ services:
       retries: 20
     restart: unless-stopped
   api:
-    image: tiktok-cungduong-app:local
+    image: ${APP_IMAGE:-tiktok-cungduong-app:local}
     build: { context: ., dockerfile: infrastructure/docker/Dockerfile }
     command: ["sh", "-c", "npm run db:migrate && npm run db:bootstrap && npm run start -w @cd/api"]
     environment:
@@ -53,7 +53,7 @@ services:
       retries: 8
     restart: unless-stopped
   web:
-    image: tiktok-cungduong-app:local
+    image: ${APP_IMAGE:-tiktok-cungduong-app:local}
     command: ["npm", "run", "start", "-w", "@cd/web"]
     environment:
       NODE_ENV: production
@@ -63,7 +63,7 @@ services:
       api: { condition: service_healthy }
     restart: unless-stopped
   tiktok-worker:
-    image: tiktok-cungduong-app:local
+    image: ${APP_IMAGE:-tiktok-cungduong-app:local}
     command: ["npm", "run", "start", "-w", "@cd/worker"]
     dns: ["${TIKTOK_DNS:-1.1.1.1}"]
     environment:
@@ -77,7 +77,7 @@ services:
       api: { condition: service_healthy }
     restart: unless-stopped
   ai-worker:
-    image: tiktok-cungduong-app:local
+    image: ${APP_IMAGE:-tiktok-cungduong-app:local}
     command: ["npm", "run", "start", "-w", "@cd/worker"]
     environment:
       NODE_ENV: production
