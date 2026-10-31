@@ -7,8 +7,8 @@ COPY apps/worker/package.json apps/worker/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/shared/package.json packages/shared/package.json
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund --fetch-retries=0 --fetch-timeout=30000
-COPY . .
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY . .
 RUN npm run build
 
 FROM node:22-bookworm-slim

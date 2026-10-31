@@ -7,8 +7,9 @@
     "db:migrate": "prisma migrate deploy --schema packages/database/prisma/schema.prisma",
     "db:bootstrap": "tsx packages/database/bootstrap.ts",
     "build": "npm run db:generate && npm run build -w @cd/shared && npm run build -w @cd/api && npm run build -w @cd/web && npm run build -w @cd/worker",
-    "test": "npm run build -w @cd/shared && npm run test -w @cd/api && npm run test -w @cd/worker",
+    "test": "npm run build -w @cd/shared && npm run test -w @cd/api && npm run test -w @cd/web && npm run test -w @cd/worker",
     "test:smoke": "node scripts/smoke.mjs",
+    "test:ai-smoke": "node scripts/ai-smoke.mjs",
     "typecheck": "npm run typecheck -w @cd/api && npm run typecheck -w @cd/web && npm run typecheck -w @cd/worker"
   },
   "devDependencies": {

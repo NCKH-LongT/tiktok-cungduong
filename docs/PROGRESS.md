@@ -9,10 +9,10 @@ This repository is a working foundation and simulator vertical slice, **not a co
 | Turnstile | Implemented when secret configured | Needs real site key and browser widget wiring |
 | TikTok connector | Adapter implemented | Live connection must be verified against an actual LIVE; follow/share and gifts depend on SDK payloads |
 | Simulator → DB → Socket → overlay | Partial verification | HTTP and Socket.IO smoke passed login, LIVE creation, simulation, event delivery, snapshot, analytics isolation, cross-account denial and token revoke. Headless Chrome rendered the PixiJS scene and a character; motion and audio still need visual E2E check. |
-| Gemini and Google TTS | Adapter implemented | Gemini key returned HTTP 200 in a direct API check on 2026-10-31; worker end-to-end and TTS still need verification. The configured Google credential path is unavailable locally. |
+| Gemini and Google TTS | Gemini verified; TTS partial | On 2026-10-31, Gemini answered a direct request and Compose AI smoke passed simulator → BullMQ → Gemini → Socket.IO. Google TTS still needs verification because the configured credential path is unavailable locally; browser speech fallback depends on browser support. |
 | Scene animation | Procedural PixiJS walk, kneel, bow, leave and camera | Licensed sprite assets and performance benchmark pending |
 | Leaderboard | Real gift rows only | Simulator gifts excluded; retention controls pending |
-| Music and mixer | Partial | Volume config stored; YouTube player and auto ducking pending |
+| Music and mixer | Partial | YouTube IFrame Player, serialized speech playback and volume ducking implemented; real browser/OBS audio behavior and full mixer channels still need verification |
 | Docker Compose and Jenkins | Compose verified locally | Application image built; all Compose services started; Nginx smoke passed on port 8080. Jenkins pipeline and HTTPS deployment still need target infrastructure verification. |
 | Security hardening | Partial | Secret encryption, CSRF token, full RBAC, data retention, load tests pending |
 

@@ -10,7 +10,7 @@ import { Server } from 'socket.io';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { z } from 'zod';
-import { giftDedupKey, liveEventSchema, type LiveEvent } from '@cd/shared';
+import { giftDedupKey, liveEventSchema, shouldAnswerComment, type LiveEvent } from '@cd/shared';
 import type { Request, Response } from 'express';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -23,7 +23,7 @@ const parse = <T extends z.ZodType>(schema: T, input: unknown): z.infer<T> => {
 const uuid = z.uuid();
 const loginSchema = z.object({ login: z.string().min(3), password: z.string().min(1), turnstileToken: z.string().optional() });
 const liveSchema = z.object({ uniqueId: z.string().regex(/^[a-zA-Z0-9_.]{2,32}$/), title: z.string().min(1).max(100) });
-const simulationSchema = z.object({ eventType: z.enum(['viewer.join','viewer.leave','chat.comment','viewer.like','viewer.share','viewer.follow','gift.received']), user: z.object({ id: z.string().max(100), nickname: z.string().max(100) }), payload: z.record(z.string(), z.unknown()).default({}) });
+const simulationSchema = z.object({ eventType: z.enum(['viewer.join','viewer.leave','chat.comment','viewer.like','viewer.share','viewer.follow','gift.received']), user: z.object({ id: z.string().max(100), nickname: z.string().max(100) }), payload: z.record(z.string(), z.unknown()).default({}), ai: z.boolean().default(false) });
 type AuthedRequest = Request & { principal?: { id: string; role: RoleCode; sessionId: string } };
 
 @Injectable()
@@ -60,7 +60,7 @@ class Services {
       if (socket.data.overlay) socket.disconnect(true);
     }
   }
-  async publish(eventInput: unknown) {
+  async publish(eventInput: unknown, includeSimulatorAI = false) {
     const event = parse(liveEventSchema, eventInput);
     const live = await this.db.liveChannel.findUnique({ where: { id: event.liveId } });
     if (!live || live.deletedAt) return false;
@@ -75,14 +75,14 @@ class Services {
       await this.db.giftEvent.createMany({ data: [{ liveId: event.liveId, dedupKey: giftDedupKey(event), viewerKey: userKey ?? 'unknown', nickname: event.user?.nickname, giftId: typeof p.giftId === 'string' ? p.giftId : null, giftName: typeof p.giftName === 'string' ? p.giftName : 'Gift', quantity: Math.max(1, Math.min(10000, Number(p.quantity) || 1)), estimatedCoins: typeof p.estimatedCoins === 'number' ? p.estimatedCoins : null, source: event.source, occurredAt: new Date(event.timestamp) }], skipDuplicates: true });
     }
     this.io?.to(`live:${event.liveId}`).emit('live.event', event);
-    if (event.source === 'tiktok') await this.enqueueAI(event);
+    if (event.source === 'tiktok' || includeSimulatorAI) await this.enqueueAI(event);
     return true;
   }
   async enqueueAI(event: LiveEvent) {
     if (!['chat.comment', 'gift.received', 'viewer.join'].includes(event.eventType)) return;
     const config = await this.db.aIConfiguration.findUnique({ where: { liveId: event.liveId } });
     if (!config?.enabled) return;
-    if (event.eventType === 'chat.comment' && !/[?？]|^(chào|xin chào)/i.test(String(event.payload.text ?? ''))) return;
+    if (event.eventType === 'chat.comment' && !shouldAnswerComment(event.payload.text)) return;
     if (event.eventType === 'gift.received' && event.payload.repeatEnd === false) return;
     const minuteKey = `ai:minute:${event.liveId}:${Math.floor(Date.now() / 60000)}`;
     const minuteCount = await this.redis.incr(minuteKey);
@@ -95,9 +95,10 @@ class Services {
     const dayCount = await this.redis.incr(dayKey);
     if (dayCount === 1) await this.redis.expire(dayKey, 172800);
     if (dayCount > (quota?.maxAiPerDay ?? 100)) return;
-    const key = `ai:cooldown:${event.liveId}:${event.user?.id ?? event.user?.uniqueId ?? 'anon'}`;
+    const key = `ai:cooldown:${event.liveId}:${event.eventType}:${event.user?.id ?? event.user?.uniqueId ?? 'anon'}`;
     if (!(await this.redis.set(key, '1', 'PX', config.cooldownMs, 'NX'))) return;
-    await this.speechQueue.add('generate', { event }, { jobId: hash(event.eventId), removeOnComplete: 100, removeOnFail: 100, attempts: 2, backoff: { type: 'exponential', delay: 1000 } });
+    const priority = event.eventType === 'gift.received' ? 2 : event.eventType === 'chat.comment' ? 3 : 5;
+    await this.speechQueue.add('generate', { event }, { jobId: hash(event.eventId), priority, removeOnComplete: 100, removeOnFail: 100, attempts: 2, backoff: { type: 'exponential', delay: 1000 } });
   }
   async leaderboard(id: string, includeSimulator = false) {
     const rows = await this.db.giftEvent.groupBy({ by: ['viewerKey', 'nickname'], where: { liveId: id, ...(includeSimulator ? {} : { source: EventSource.tiktok }) }, _sum: { quantity: true, estimatedCoins: true }, orderBy: { _sum: { quantity: 'desc' } }, take: 5 });
@@ -180,13 +181,13 @@ class LivesController {
   @Post(':id/rules') async addRule(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ triggerType: z.string().max(50), enabled: z.boolean().default(true), actions: z.array(z.object({ type: z.enum(['spawn.character','character.show.comment','camera.focus','sound.play.wooden.fish']) })).max(10), cooldownMs: z.number().int().min(0).max(3600000).default(0), priority: z.number().int().min(-100).max(100).default(0) }), body); return this.s.db.liveRule.create({ data: { ...d, liveId: id } }); }
   @Post(':id/overlay-token/rotate') async rotate(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); const token = randomBytes(32).toString('base64url'); await this.s.db.$transaction([this.s.db.overlayToken.updateMany({ where: { liveId: id, revokedAt: null }, data: { revokedAt: new Date() } }), this.s.db.overlayToken.create({ data: { liveId: id, tokenHash: hash(token) } })]); await this.s.disconnectOverlays(id); return { url: `${process.env.PUBLIC_OVERLAY_URL ?? 'http://localhost:3000'}/overlay/${id}?token=${token}` }; }
   @Post(':id/overlay-token/revoke') async revoke(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); await this.s.db.overlayToken.updateMany({ where: { liveId: id }, data: { revokedAt: new Date() } }); await this.s.disconnectOverlays(id); return { ok: true }; }
-  @Post(':id/simulate') async simulate(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(simulationSchema, body); const event: LiveEvent = { eventId: crypto.randomUUID(), liveId: id, source: 'simulator', eventType: d.eventType, timestamp: new Date().toISOString(), user: d.user, payload: d.payload }; await this.s.publish(event); return event; }
+  @Post(':id/simulate') async simulate(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(simulationSchema, body); const event: LiveEvent = { eventId: crypto.randomUUID(), liveId: id, source: 'simulator', eventType: d.eventType, timestamp: new Date().toISOString(), user: d.user, payload: d.payload }; await this.s.publish(event, d.ai); return event; }
 }
 
 @Controller('overlay')
 class OverlayController {
   constructor(private readonly s: Services) {}
-  @Get(':id/snapshot') async snapshot(@Param('id') id: string, @Query('token') token: string) { await this.s.overlay(id, token); const events = await this.s.db.liveEvent.findMany({ where: { liveId: id }, orderBy: { createdAt: 'desc' }, take: 50, select: { payload: true } }); return { events: events.reverse().map(x => x.payload), leaderboard: await this.s.leaderboard(id), scene: await this.s.db.sceneConfiguration.findUnique({ where: { liveId: id } }), audio: await this.s.db.audioConfiguration.findUnique({ where: { liveId: id }, select: { woodenFishEnabled: true, woodenFishVolume: true, musicVolume: true } }) }; }
+  @Get(':id/snapshot') async snapshot(@Param('id') id: string, @Query('token') token: string) { await this.s.overlay(id, token); const events = await this.s.db.liveEvent.findMany({ where: { liveId: id }, orderBy: { createdAt: 'desc' }, take: 50, select: { payload: true } }); return { events: events.reverse().map(x => x.payload), leaderboard: await this.s.leaderboard(id), scene: await this.s.db.sceneConfiguration.findUnique({ where: { liveId: id } }), audio: await this.s.db.audioConfiguration.findUnique({ where: { liveId: id }, select: { woodenFishEnabled: true, woodenFishVolume: true, musicVolume: true, musicUrl: true, ttsVolume: true } }) }; }
 }
 
 @Module({ controllers: [HealthController, AuthController, UsersController, LivesController, OverlayController], providers: [Services, SessionGuard] })

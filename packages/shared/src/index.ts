@@ -19,3 +19,12 @@ export function giftDedupKey(event: LiveEvent): string {
   const gift = typeof p.giftId === 'string' ? p.giftId : '';
   return combo ? `${event.liveId}:${event.user?.id ?? event.user?.uniqueId}:${gift}:${combo}` : event.eventId;
 }
+
+export function shouldAnswerComment(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const text = value.normalize('NFKC').trim().toLowerCase();
+  if (!text || text.length > 300) return false;
+  if (/(https?:\/\/|www\.|api.?key|mật khẩu|password|system.?prompt|ignore previous|bỏ qua hướng dẫn|tiết lộ bí mật)/i.test(text)) return false;
+  if (/(.)\1{12,}/u.test(text)) return false;
+  return /[?？]|^(chào|xin chào|nam mô)/i.test(text);
+}

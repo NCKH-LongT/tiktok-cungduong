@@ -12,7 +12,9 @@ Requirements: Node 22, npm 10, Docker Compose.
 4. Open `http://localhost:8080` and sign in with the bootstrap admin.
 5. Create a LIVE channel, rotate an overlay token, open the OBS URL, and use the Simulator tab to test events.
 
-The default `TIKTOK_CONNECTOR_MODE=simulator` never contacts TikTok. Switch to `tiktok` only after verifying the community adapter and obtaining any required signing access. AI comment answers require `GEMINI_API_KEY`. Google TTS requires a service-account JSON in `./secrets` and `GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/<filename>.json` in the Compose environment. Speech without Google credentials has text only.
+The default `TIKTOK_CONNECTOR_MODE=simulator` never contacts TikTok. Switch to `tiktok` only after verifying the community adapter and obtaining any required signing access. AI comment answers require `GEMINI_API_KEY`. Google TTS requires a service-account JSON in `./secrets` and `GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/<filename>.json` in the Compose environment. Without Google credentials, the overlay uses the browser's Vietnamese speech synthesis when available; voice quality depends on the browser. The Simulator tab can explicitly test AI without counting the event as real LIVE activity.
+
+YouTube music uses the official IFrame Player API and stays visible in the overlay. Autoplay can be blocked; use the player button or OBS Browser Source interaction to start it. Audio from the overlay is what OBS captures. Use music you have permission to play.
 
 ## VPS and CI/CD
 
@@ -24,4 +26,4 @@ PostgreSQL and Redis use named volumes. Back up with `docker compose exec -T pos
 
 ## Developer commands
 
-`npm run db:generate` generates Prisma client. `npm run db:migrate` applies checked-in migrations. `npm run db:bootstrap` creates the admin from environment variables. `npm test` runs unit tests. `npm run typecheck` verifies TypeScript. `npm run test:smoke` exercises the running stack from login through simulator and token revoke; set `SMOKE_BASE_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in the shell. See [architecture](docs/ARCHITECTURE.md) and [plan](docs/IMPLEMENTATION_PLAN.md).
+`npm run db:generate` generates Prisma client. `npm run db:migrate` applies checked-in migrations. `npm run db:bootstrap` creates the admin from environment variables. `npm test` runs unit tests. `npm run typecheck` verifies TypeScript. `npm run test:smoke` exercises the running stack from login through simulator and token revoke; set `SMOKE_BASE_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in the shell. With a configured Gemini worker, `npm run test:ai-smoke` checks the simulator → Gemini → speech socket path. See [architecture](docs/ARCHITECTURE.md) and [plan](docs/IMPLEMENTATION_PLAN.md).
