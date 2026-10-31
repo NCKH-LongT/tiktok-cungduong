@@ -16,6 +16,7 @@ let stopping = false;
 function record(value: unknown): Record<string, unknown> { return value && typeof value === 'object' ? value as Record<string, unknown> : {}; }
 function string(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined; }
 function number(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
+function errorMessage(value: unknown): string { return value instanceof Error ? value.message : string(record(value).message) ?? 'Unknown TikTok error'; }
 function user(raw: Record<string, unknown>) { const u = record(raw.user); return { id: string(raw.userId) ?? string(u.id) ?? string(raw.uniqueId) ?? 'unknown', uniqueId: string(raw.uniqueId), nickname: string(raw.nickname) ?? string(u.nickname) ?? 'Người xem' }; }
 function event(liveId: string, sessionId: string, type: LiveEvent['eventType'], raw: unknown, payload: Record<string, unknown> = {}): LiveEvent {
   const data = record(raw);
@@ -41,10 +42,10 @@ async function runTikTok() {
     client.on(WebcastEvent.GIFT, on('gift.received', d => ({ giftId: String(d.giftId ?? ''), giftName: string(d.giftName) ?? 'Gift', quantity: number(d.repeatCount) ?? 1, comboId: string(d.groupId) ?? string(d.comboId), repeatCount: number(d.repeatCount), repeatEnd: d.repeatEnd !== false, estimatedCoins: number(d.diamondCount) })));
     client.on(WebcastEvent.SHARE, on('viewer.share', () => ({})));
     client.on(WebcastEvent.FOLLOW, on('viewer.follow', () => ({})));
-    client.on(ControlEvent.ERROR, () => {});
+    client.on(ControlEvent.ERROR, error => { console.error(`TikTok connection error for @${uniqueId}:`, errorMessage(error)); });
     client.on(ControlEvent.DISCONNECTED, () => { if (connections.has(liveId)) void (async () => { await disconnect(liveId); await unavailable(liveId); })(); });
     try { await client.connect(); retries.delete(liveId); await db.liveChannel.update({ where: { id: liveId }, data: { status: 'connected', lastConnectedAt: new Date() } }); await publish(event(liveId, session.id, 'room.connected', {})); }
-    catch { await disconnect(liveId); await unavailable(liveId); }
+    catch (error) { console.error(`TikTok connection failed for @${uniqueId}:`, errorMessage(error)); await disconnect(liveId); await unavailable(liveId); }
   }
   while (!stopping) {
     if (process.env.TIKTOK_CONNECTOR_MODE === 'tiktok') {

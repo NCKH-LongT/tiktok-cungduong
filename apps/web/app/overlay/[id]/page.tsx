@@ -1,11 +1,11 @@
 'use client';
 import { use, useEffect, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import type { Application, Container, Graphics, Text } from 'pixi.js';
+import type { Application, Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
 import MusicPlayer, { type YouTubePlayer } from './music';
 
 type LiveEvent = { eventId: string; eventType: string; source: string; user?: { id?: string; uniqueId?: string; nickname?: string }; payload: Record<string, unknown> };
-type Person = { key: string; name: string; seat: number; body: Container; glow: Graphics; label: Text; state: 'walking' | 'kneeling' | 'bowing' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; bowUntil: number; highlightUntil: number };
+type Person = { key: string; name: string; seat: number; body: Container; sprite: Sprite; glow: Graphics; label: Text; state: 'walking' | 'lowering' | 'bowing' | 'kneeling' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; phaseUntil: number; highlightUntil: number };
 type Speech = { text: string; audio?: string };
 const WIDTH = 900, HEIGHT = 1600;
 
@@ -27,8 +27,19 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     let activeGift: { key: string; until: number } | null = null, speaking = false;
     const giftQueue: string[] = [], speechQueue: Speech[] = [];
     const people = new Map<string, Person>();
-    const seats = Array.from({ length: 40 }, (_, index) => ({ x: 120 + (index % 5) * 160, y: 660 + Math.floor(index / 5) * 102, occupied: false }));
+    const seatColumns = [255, 635, 110, 790, 365];
+    const seats = Array.from({ length: 40 }, (_, index) => ({ x: seatColumns[index % 5], y: 1010 + Math.floor(index / 5) * 70, occupied: false }));
     let Pixi: typeof import('pixi.js') | undefined;
+    let poses: { standing: Texture; kneeling: Texture; bowing: Texture } | undefined;
+
+    function setPose(person: Person, pose: keyof NonNullable<typeof poses>) {
+      if (!poses) return;
+      if (person.sprite.texture !== poses[pose]) person.sprite.texture = poses[pose];
+      const depth = Math.max(0, Math.min(1, (person.y - 1000) / 550));
+      person.sprite.scale.set(.13 + depth * .065);
+      person.label.y = -person.sprite.height - 8;
+      person.glow.y = -person.sprite.height / 2;
+    }
 
     function fish() {
       if (!fishEnabled) return;
@@ -47,27 +58,28 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     }
     function spawn(event: LiveEvent) {
       const key = event.user?.id ?? event.user?.uniqueId;
-      if (!key || !scene || !Pixi) return;
+      if (!key || !scene || !Pixi || !poses) return;
       const existing = people.get(key);
       if (existing) { existing.last = Date.now(); return existing; }
       if (people.size >= maxPeople) return;
       const seat = seats.findIndex(item => !item.occupied);
       if (seat < 0) return;
       seats[seat].occupied = true;
-      const { Container, Graphics, Text } = Pixi;
+      const { Container, Graphics, Sprite, Text } = Pixi;
       const body = new Container();
-      const glow = new Graphics().circle(0, 5, 55).fill({ color: 0xffdc7c, alpha: .45 });
+      const glow = new Graphics().circle(0, 0, 58).fill({ color: 0xffdc7c, alpha: .45 });
       glow.alpha = 0;
-      const robe = new Graphics().roundRect(-18, 0, 36, 50, 12).fill(0xb47c3d);
-      const head = new Graphics().circle(0, -15, 20).fill(0xe3b68a);
-      const arms = new Graphics().roundRect(-27, 6, 54, 9, 5).fill(0xd6a675);
+      const sprite = new Sprite(poses.standing);
+      sprite.anchor.set(.5, 1);
       const name = (event.user?.nickname ?? 'Phật tử').slice(0, 16);
       const label = new Text({ text: name, style: { fill: 0xffffff, fontSize: 16, align: 'center' } });
-      label.anchor.set(.5, 1); label.y = -42;
-      body.addChild(glow, robe, arms, head, label);
-      body.x = 450; body.y = 1520; scene.addChild(body);
+      label.anchor.set(.5, 1);
+      body.addChild(glow, sprite, label);
+      body.x = 450; body.y = 1590; scene.addChild(body);
       const target = seats[seat];
-      const person: Person = { key, name, seat, body, glow, label, state: 'walking', x: 450, y: 1520, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, bowUntil: 0, highlightUntil: 0 };
+      body.zIndex = target.y;
+      const person: Person = { key, name, seat, body, sprite, glow, label, state: 'walking', x: 450, y: 1590, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, phaseUntil: 0, highlightUntil: 0 };
+      setPose(person, 'standing');
       people.set(key, person);
       return person;
     }
@@ -75,7 +87,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       const key = event.user?.id ?? event.user?.uniqueId ?? '';
       if (event.eventType === 'viewer.leave') {
         const person = people.get(key);
-        if (person) { person.state = 'leaving'; person.targetX = 450; person.targetY = 1520; }
+        if (person) { person.state = 'leaving'; person.targetX = 450; person.targetY = 1590; setPose(person, 'standing'); }
         return;
       }
       const person = spawn(event);
@@ -85,7 +97,8 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       }
       if (event.eventType === 'gift.received' && person) {
         giftQueue.push(person.key);
-        person.state = 'bowing'; person.bowUntil = Date.now() + 1800; person.highlightUntil = Date.now() + 3500;
+        person.highlightUntil = Date.now() + 3500;
+        if (person.state === 'kneeling') { person.state = 'bowing'; person.phaseUntil = Date.now() + 1000; setPose(person, 'bowing'); }
       }
       if (event.eventType === 'viewer.like') fish();
     }
@@ -138,26 +151,27 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     async function start() {
       Pixi = await import('pixi.js');
       if (disposed) return;
-      const { Application, Container, Graphics, Text } = Pixi;
+      const { Application, Container, Sprite, Texture, Rectangle, Assets } = Pixi;
+      const [backgroundTexture, sheet] = await Promise.all([
+        Assets.load<Texture>('/overlay/chanhdien.png'),
+        Assets.load<Texture>('/overlay/nhanvat01.png'),
+      ]);
+      if (disposed) return;
+      poses = {
+        standing: new Texture({ source: sheet.source, frame: new Rectangle(0, 65, 285, 880) }),
+        kneeling: new Texture({ source: sheet.source, frame: new Rectangle(285, 330, 285, 605) }),
+        bowing: new Texture({ source: sheet.source, frame: new Rectangle(570, 640, 395, 300) }),
+      };
       app = new Application();
       await app.init({ width: WIDTH, height: HEIGHT, background: 0x18120d, antialias: true });
       if (disposed) { app.destroy(true); return; }
       app.canvas.style.width = '100%'; app.canvas.style.height = '100%';
       holder.current?.appendChild(app.canvas);
-      camera = new Container(); scene = new Container();
+      camera = new Container(); scene = new Container(); scene.sortableChildren = true;
       app.stage.addChild(camera); camera.addChild(scene);
-      const background = new Graphics()
-        .rect(0, 0, WIDTH, HEIGHT).fill(0x25180e)
-        .rect(70, 80, 760, 470).fill(0x3b2415)
-        .roundRect(220, 160, 460, 300, 30).fill(0x75502b)
-        .roundRect(330, 200, 240, 240, 80).fill(0xc3944d)
-        .roundRect(390, 250, 120, 130, 50).fill(0xe2be70)
-        .rect(80, 550, 740, 1050).fill(0x4c3825);
+      const background = new Sprite(backgroundTexture);
+      background.width = WIDTH; background.height = HEIGHT;
       scene.addChild(background);
-      scene.addChild(new Graphics().circle(450, 300, 200).fill({ color: 0xffc45e, alpha: .12 }));
-      const altar = new Text({ text: 'CHÁNH ĐIỆN', style: { fill: 0xffda91, fontSize: 44, fontWeight: 'bold' } });
-      altar.anchor.set(.5); altar.x = 450; altar.y = 475; scene.addChild(altar);
-      for (const seat of seats) scene.addChild(new Graphics().roundRect(seat.x - 35, seat.y - 8, 70, 36, 16).fill(0x896a3c));
       camera.pivot.set(450, 800); camera.position.set(450, 800);
       app.ticker.add(ticker => {
         const now = Date.now(), delta = Math.min(ticker.deltaTime, 3);
@@ -169,20 +183,26 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
                 scene.removeChild(person.body); person.body.destroy({ children: true });
                 people.delete(person.key); seats[person.seat].occupied = false; continue;
               }
-              person.state = 'bowing'; person.bowUntil = now + 1500;
+              person.state = 'lowering'; person.phaseUntil = now + 650;
+              person.body.rotation = 0;
+              setPose(person, 'kneeling');
             } else {
-              const step = Math.min(distance, 5 * delta);
+              const step = Math.min(distance, 7 * delta);
               person.x += dx / distance * step; person.y += dy / distance * step;
-              person.body.rotation = Math.sin(now / 120) * .035;
+              person.body.rotation = Math.sin(now / 130) * .04;
+              setPose(person, 'standing');
             }
-          } else if (person.state === 'bowing') {
-            person.body.scale.y = .78 + Math.sin(now / 120) * .12;
-            if (now > person.bowUntil) { person.state = 'kneeling'; person.body.scale.y = .75; person.body.rotation = 0; }
+          } else if (person.state === 'lowering' && now > person.phaseUntil) {
+            person.state = 'bowing'; person.phaseUntil = now + 1050;
+            setPose(person, 'bowing');
+          } else if (person.state === 'bowing' && now > person.phaseUntil) {
+            person.state = 'kneeling';
+            setPose(person, 'kneeling');
           }
           person.body.x = person.x; person.body.y = person.y;
           person.glow.alpha = now < person.highlightUntil ? .75 + Math.sin(now / 120) * .15 : 0;
           if (person.bubbleUntil && now > person.bubbleUntil) { person.label.text = person.name; person.bubbleUntil = 0; }
-          if (now - person.last > ttl && person.state !== 'leaving') { person.state = 'leaving'; person.targetX = 450; person.targetY = 1520; }
+          if (now - person.last > ttl && person.state !== 'leaving') { person.state = 'leaving'; person.targetX = 450; person.targetY = 1590; setPose(person, 'standing'); }
         }
         if (!activeGift && giftQueue.length) activeGift = { key: giftQueue.shift()!, until: now + 3500 };
         if (activeGift && now > activeGift.until) activeGift = null;

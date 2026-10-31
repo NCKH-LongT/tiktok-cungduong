@@ -11,7 +11,7 @@ const ready=await request('/ready');assert.equal(ready.status,200);
 const bad=await request('/auth/login',{method:'POST',body:JSON.stringify({login:email,password:'wrong'})});assert.equal(bad.status,401);
 const login=await request('/auth/login',{method:'POST',body:JSON.stringify({login:email,password})});assert.equal(login.status,201);
 const suffix=randomUUID().slice(0,8);
-const created=await request('/lives',{method:'POST',body:JSON.stringify({uniqueId:'smoke_'+suffix,title:'Smoke '+suffix})});assert.equal(created.status,201);
+const created=await request('/lives',{method:'POST',body:JSON.stringify({uniqueId:'@smoke_'+suffix,title:'Smoke '+suffix})});assert.equal(created.status,201);assert.equal(created.data.uniqueId,'smoke_'+suffix);
 const id=created.data.id;
 let socket;
 try{

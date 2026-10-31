@@ -22,7 +22,7 @@ const parse = <T extends z.ZodType>(schema: T, input: unknown): z.infer<T> => {
 };
 const uuid = z.uuid();
 const loginSchema = z.object({ login: z.string().min(3), password: z.string().min(1), turnstileToken: z.string().optional() });
-const liveSchema = z.object({ uniqueId: z.string().regex(/^[a-zA-Z0-9_.]{2,32}$/), title: z.string().min(1).max(100) });
+const liveSchema = z.object({ uniqueId: z.string().trim().regex(/^@?[a-zA-Z0-9_.]{2,32}$/).transform(value => value.replace(/^@/, '')), title: z.string().min(1).max(100) });
 const simulationSchema = z.object({ eventType: z.enum(['viewer.join','viewer.leave','chat.comment','viewer.like','viewer.share','viewer.follow','gift.received']), user: z.object({ id: z.string().max(100), nickname: z.string().max(100) }), payload: z.record(z.string(), z.unknown()).default({}), ai: z.boolean().default(false) });
 type AuthedRequest = Request & { principal?: { id: string; role: RoleCode; sessionId: string } };
 
