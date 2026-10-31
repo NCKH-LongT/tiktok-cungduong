@@ -10,6 +10,8 @@ fi
 
 export APP_IMAGE="tiktok-cungduong-app:$build_number"
 export HTTP_PORT=8091
+export PUBLIC_APP_URL="${DEPLOY_PUBLIC_APP_URL:-https://farm-cong-duc.nongdanonline.cc}"
+export PUBLIC_OVERLAY_URL="${DEPLOY_PUBLIC_OVERLAY_URL:-$PUBLIC_APP_URL}"
 docker image inspect "$APP_IMAGE" >/dev/null
 docker compose --env-file "$env_file" config -q
 docker compose --env-file "$env_file" up -d --no-build --wait
