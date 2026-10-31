@@ -1,0 +1,317 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleCode {
+  SUPER_ADMIN
+  ADMIN
+  USER
+  VIEWER
+}
+
+enum EventSource {
+  tiktok
+  simulator
+}
+
+enum ChannelStatus {
+  stopped
+  connecting
+  connected
+  unavailable
+}
+
+model User {
+  id           String        @id @default(uuid()) @db.Uuid
+  email        String        @unique
+  username     String        @unique
+  passwordHash String
+  role         RoleCode      @default(USER)
+  active       Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  deletedAt    DateTime?
+  sessions     AuthSession[]
+  channels     LiveChannel[]
+  audit        AuditLog[]
+  quota        UserQuota?
+  roles        UserRole[]
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique
+  name        String
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id    String           @id @default(uuid()) @db.Uuid
+  code  String           @unique
+  roles RolePermission[]
+}
+
+model UserRole {
+  userId String @db.Uuid
+  roleId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+model RolePermission {
+  roleId       String     @db.Uuid
+  permissionId String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model AuthSession {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  actorId   String?  @db.Uuid
+  action    String
+  targetId  String?
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+}
+
+model LiveChannel {
+  id              String              @id @default(uuid()) @db.Uuid
+  ownerId         String              @db.Uuid
+  uniqueId        String
+  title           String
+  status          ChannelStatus       @default(stopped)
+  autoReconnect   Boolean             @default(true)
+  lastConnectedAt DateTime?
+  deletedAt       DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  owner           User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  sessions        LiveSession[]
+  events          LiveEvent[]
+  gifts           GiftEvent[]
+  viewers         Viewer[]
+  rules           LiveRule[]
+  ai              AIConfiguration?
+  audio           AudioConfiguration?
+  scene           SceneConfiguration?
+  tokens          OverlayToken[]
+  characters      CharacterState[]
+  interactions    AIInteraction[]
+  speech          SpeechJob[]
+  metrics         UsageMetric[]
+
+  @@unique([ownerId, uniqueId])
+  @@index([ownerId, deletedAt])
+}
+
+model LiveSession {
+  id        String      @id @default(uuid()) @db.Uuid
+  liveId    String      @db.Uuid
+  startedAt DateTime    @default(now())
+  endedAt   DateTime?
+  live      LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+  events    LiveEvent[]
+
+  @@index([liveId, startedAt])
+}
+
+model LiveEvent {
+  id         String       @id @default(uuid()) @db.Uuid
+  eventId    String       @unique
+  liveId     String       @db.Uuid
+  sessionId  String?      @db.Uuid
+  source     EventSource
+  type       String
+  userKey    String?
+  payload    Json
+  occurredAt DateTime
+  createdAt  DateTime     @default(now())
+  live       LiveChannel  @relation(fields: [liveId], references: [id], onDelete: Cascade)
+  session    LiveSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([liveId, createdAt])
+  @@index([liveId, type, createdAt])
+}
+
+model Viewer {
+  id         String           @id @default(uuid()) @db.Uuid
+  liveId     String           @db.Uuid
+  userKey    String
+  nickname   String?
+  avatarUrl  String?
+  lastSeenAt DateTime         @default(now())
+  deletedAt  DateTime?
+  live       LiveChannel      @relation(fields: [liveId], references: [id], onDelete: Cascade)
+  presences  ViewerPresence[]
+
+  @@unique([liveId, userKey])
+  @@index([lastSeenAt])
+}
+
+model ViewerPresence {
+  id        String    @id @default(uuid()) @db.Uuid
+  viewerId  String    @db.Uuid
+  enteredAt DateTime  @default(now())
+  leftAt    DateTime?
+  inferred  Boolean   @default(false)
+  viewer    Viewer    @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@index([viewerId, enteredAt])
+}
+
+model GiftEvent {
+  id             String      @id @default(uuid()) @db.Uuid
+  liveId         String      @db.Uuid
+  dedupKey       String      @unique
+  viewerKey      String
+  nickname       String?
+  giftId         String?
+  giftName       String
+  quantity       Int         @default(1)
+  estimatedCoins Int?
+  source         EventSource
+  occurredAt     DateTime
+  live           LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+
+  @@index([liveId, source, occurredAt])
+}
+
+model LiveRule {
+  id          String      @id @default(uuid()) @db.Uuid
+  liveId      String      @db.Uuid
+  triggerType String
+  enabled     Boolean     @default(true)
+  conditions  Json        @default("{}")
+  actions     Json        @default("[]")
+  cooldownMs  Int         @default(0)
+  priority    Int         @default(0)
+  live        LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+
+  @@index([liveId, triggerType])
+}
+
+model AIConfiguration {
+  id              String      @id @default(uuid()) @db.Uuid
+  liveId          String      @unique @db.Uuid
+  enabled         Boolean     @default(false)
+  personality     String      @default("Thân thiện")
+  customPrompt    String?
+  encryptedApiKey String?
+  cooldownMs      Int         @default(30000)
+  maxPerMinute    Int         @default(10)
+  live            LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+}
+
+model AIInteraction {
+  id            String      @id @default(uuid()) @db.Uuid
+  liveId        String      @db.Uuid
+  sourceEventId String?
+  prompt        String?
+  answer        String?
+  status        String
+  createdAt     DateTime    @default(now())
+  live          LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+
+  @@index([liveId, createdAt])
+}
+
+model SpeechJob {
+  id        String      @id @default(uuid()) @db.Uuid
+  liveId    String      @db.Uuid
+  text      String
+  priority  Int         @default(0)
+  status    String      @default("queued")
+  createdAt DateTime    @default(now())
+  live      LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+
+  @@index([liveId, status])
+}
+
+model AudioConfiguration {
+  id                String      @id @default(uuid()) @db.Uuid
+  liveId            String      @unique @db.Uuid
+  musicUrl          String?
+  musicVolume       Int         @default(30)
+  ttsVolume         Int         @default(80)
+  woodenFishEnabled Boolean     @default(false)
+  woodenFishVolume  Int         @default(30)
+  live              LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+}
+
+model SceneConfiguration {
+  id                 String      @id @default(uuid()) @db.Uuid
+  liveId             String      @unique @db.Uuid
+  maxCharacters      Int         @default(40)
+  inactiveTtlSeconds Int         @default(900)
+  reducedMotion      Boolean     @default(false)
+  theme              String      @default("temple")
+  live               LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+}
+
+model CharacterState {
+  id             String      @id @default(uuid()) @db.Uuid
+  liveId         String      @db.Uuid
+  viewerKey      String
+  state          String
+  seatId         String?
+  lastActivityAt DateTime    @default(now())
+  live           LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+
+  @@unique([liveId, viewerKey])
+}
+
+model OverlayToken {
+  id        String      @id @default(uuid()) @db.Uuid
+  liveId    String      @db.Uuid
+  tokenHash String      @unique
+  revokedAt DateTime?
+  createdAt DateTime    @default(now())
+  live      LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+
+  @@index([liveId, revokedAt])
+}
+
+model UsageMetric {
+  id          String      @id @default(uuid()) @db.Uuid
+  liveId      String      @db.Uuid
+  key         String
+  value       Int         @default(0)
+  periodStart DateTime
+  live        LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
+
+  @@unique([liveId, key, periodStart])
+}
+
+model UserQuota {
+  id           String @id @default(uuid()) @db.Uuid
+  userId       String @unique @db.Uuid
+  maxLives     Int    @default(3)
+  maxAiPerDay  Int    @default(100)
+  maxTtsPerDay Int    @default(100)
+  user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

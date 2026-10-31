@@ -1,0 +1,102 @@
+name: tiktok-cungduong
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cungduong}
+      POSTGRES_USER: ${POSTGRES_USER:-cungduong}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  api:
+    image: tiktok-cungduong-app:local
+    build: { context: ., dockerfile: infrastructure/docker/Dockerfile }
+    command: ["sh", "-c", "npm run db:migrate && npm run db:bootstrap && npm run start -w @cd/api"]
+    environment:
+      NODE_ENV: production
+      API_PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cungduong}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cungduong}
+      REDIS_URL: redis://redis:6379
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      TIKTOK_CONNECTOR_MODE: ${TIKTOK_CONNECTOR_MODE:-simulator}
+      TIKTOK_SIGN_API_KEY: ${TIKTOK_SIGN_API_KEY:-}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost}
+      PUBLIC_OVERLAY_URL: ${PUBLIC_OVERLAY_URL:-http://localhost}
+      CORS_ORIGINS: ${PUBLIC_APP_URL:-http://localhost}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+    restart: unless-stopped
+  web:
+    image: tiktok-cungduong-app:local
+    command: ["npm", "run", "start", "-w", "@cd/web"]
+    environment:
+      NODE_ENV: production
+      API_INTERNAL_URL: http://api:3001
+      PORT: 3000
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+  tiktok-worker:
+    image: tiktok-cungduong-app:local
+    command: ["npm", "run", "start", "-w", "@cd/worker"]
+    environment:
+      NODE_ENV: production
+      WORKER_ROLE: tiktok
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cungduong}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cungduong}
+      REDIS_URL: redis://redis:6379
+      TIKTOK_CONNECTOR_MODE: ${TIKTOK_CONNECTOR_MODE:-simulator}
+      TIKTOK_SIGN_API_KEY: ${TIKTOK_SIGN_API_KEY:-}
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+  ai-worker:
+    image: tiktok-cungduong-app:local
+    command: ["npm", "run", "start", "-w", "@cd/worker"]
+    environment:
+      NODE_ENV: production
+      WORKER_ROLE: ai
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cungduong}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cungduong}
+      REDIS_URL: redis://redis:6379
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    volumes:
+      - ./secrets:/run/secrets:ro
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+  nginx:
+    image: nginx:1.27-alpine
+    volumes: ["./infrastructure/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"]
+    ports: ["${HTTP_PORT:-8080}:80"]
+    depends_on: [web]
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  redis-data:

@@ -1,0 +1,20 @@
+{
+  "name": "tiktok-cungduong",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "db:generate": "prisma generate --schema packages/database/prisma/schema.prisma",
+    "db:migrate": "prisma migrate deploy --schema packages/database/prisma/schema.prisma",
+    "db:bootstrap": "tsx packages/database/bootstrap.ts",
+    "build": "npm run db:generate && npm run build -w @cd/shared && npm run build -w @cd/api && npm run build -w @cd/web && npm run build -w @cd/worker",
+    "test": "npm run build -w @cd/shared && npm run test -w @cd/api && npm run test -w @cd/worker",
+    "test:smoke": "node scripts/smoke.mjs",
+    "typecheck": "npm run typecheck -w @cd/api && npm run typecheck -w @cd/web && npm run typecheck -w @cd/worker"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "prisma": "6.19.3",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
