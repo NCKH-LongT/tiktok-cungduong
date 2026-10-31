@@ -1,11 +1,11 @@
 'use client';
 import { use, useEffect, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import type { Application, Container, Text } from 'pixi.js';
+import type { Application, Container, Graphics, Text } from 'pixi.js';
 import MusicPlayer, { type YouTubePlayer } from './music';
 
 type LiveEvent = { eventId: string; eventType: string; source: string; user?: { id?: string; uniqueId?: string; nickname?: string }; payload: Record<string, unknown> };
-type Person = { key: string; name: string; seat: number; body: Container; label: Text; state: 'walking' | 'kneeling' | 'bowing' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; bowUntil: number };
+type Person = { key: string; name: string; seat: number; body: Container; glow: Graphics; label: Text; state: 'walking' | 'kneeling' | 'bowing' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; bowUntil: number; highlightUntil: number };
 type Speech = { text: string; audio?: string };
 const WIDTH = 900, HEIGHT = 1600;
 
@@ -22,7 +22,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   useEffect(() => {
     let app: Application | undefined, socket: Socket | undefined, disposed = false;
     let scene: Container, camera: Container, audioContext: AudioContext | undefined;
-    let ttl = 900000, maxPeople = 40, fishEnabled = false, fishVolume = .3, ttsVolume = .8, musicBase = 30, currentMusic = 30;
+    let ttl = 900000, maxPeople = 40, fishEnabled = false, fishVolume = .3, ttsVolume = .8, ttsRate = 1, ttsPitch = 0, musicBase = 30, currentMusic = 30;
     let duckTimer: ReturnType<typeof setInterval> | undefined, currentAudio: HTMLAudioElement | undefined;
     let activeGift: { key: string; until: number } | null = null, speaking = false;
     const giftQueue: string[] = [], speechQueue: Speech[] = [];
@@ -56,16 +56,18 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       seats[seat].occupied = true;
       const { Container, Graphics, Text } = Pixi;
       const body = new Container();
+      const glow = new Graphics().circle(0, 5, 55).fill({ color: 0xffdc7c, alpha: .45 });
+      glow.alpha = 0;
       const robe = new Graphics().roundRect(-18, 0, 36, 50, 12).fill(0xb47c3d);
       const head = new Graphics().circle(0, -15, 20).fill(0xe3b68a);
       const arms = new Graphics().roundRect(-27, 6, 54, 9, 5).fill(0xd6a675);
       const name = (event.user?.nickname ?? 'Phật tử').slice(0, 16);
       const label = new Text({ text: name, style: { fill: 0xffffff, fontSize: 16, align: 'center' } });
       label.anchor.set(.5, 1); label.y = -42;
-      body.addChild(robe, arms, head, label);
+      body.addChild(glow, robe, arms, head, label);
       body.x = 450; body.y = 1520; scene.addChild(body);
       const target = seats[seat];
-      const person: Person = { key, name, seat, body, label, state: 'walking', x: 450, y: 1520, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, bowUntil: 0 };
+      const person: Person = { key, name, seat, body, glow, label, state: 'walking', x: 450, y: 1520, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, bowUntil: 0, highlightUntil: 0 };
       people.set(key, person);
       return person;
     }
@@ -83,7 +85,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       }
       if (event.eventType === 'gift.received' && person) {
         giftQueue.push(person.key);
-        person.state = 'bowing'; person.bowUntil = Date.now() + 1800;
+        person.state = 'bowing'; person.bowUntil = Date.now() + 1800; person.highlightUntil = Date.now() + 3500;
       }
       if (event.eventType === 'viewer.like') fish();
     }
@@ -112,7 +114,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       } else if ('speechSynthesis' in window) {
         await new Promise<void>(resolve => {
           const utterance = new SpeechSynthesisUtterance(job.text);
-          utterance.lang = 'vi-VN'; utterance.volume = ttsVolume;
+          utterance.lang = 'vi-VN'; utterance.volume = ttsVolume; utterance.rate = ttsRate; utterance.pitch = Math.max(0, Math.min(2, 1 + ttsPitch / 10));
           const timer = setTimeout(resolve, 20000);
           const done = () => { clearTimeout(timer); resolve(); };
           utterance.onend = done; utterance.onerror = done;
@@ -178,6 +180,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
             if (now > person.bowUntil) { person.state = 'kneeling'; person.body.scale.y = .75; person.body.rotation = 0; }
           }
           person.body.x = person.x; person.body.y = person.y;
+          person.glow.alpha = now < person.highlightUntil ? .75 + Math.sin(now / 120) * .15 : 0;
           if (person.bubbleUntil && now > person.bubbleUntil) { person.label.text = person.name; person.bubbleUntil = 0; }
           if (now - person.last > ttl && person.state !== 'leaving') { person.state = 'leaving'; person.targetX = 450; person.targetY = 1520; }
         }
@@ -203,6 +206,8 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       fishEnabled = Boolean(snapshot.audio?.woodenFishEnabled);
       fishVolume = (snapshot.audio?.woodenFishVolume ?? 30) / 100;
       ttsVolume = (snapshot.audio?.ttsVolume ?? 80) / 100;
+      ttsRate = snapshot.audio?.speakingRate ?? 1;
+      ttsPitch = snapshot.audio?.pitch ?? 0;
       musicBase = snapshot.audio?.musicVolume ?? 30;
       currentMusic = musicBase;
       setMusicVolume(musicBase);

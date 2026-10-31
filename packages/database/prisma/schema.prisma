@@ -258,6 +258,9 @@ model AudioConfiguration {
   musicUrl          String?
   musicVolume       Int         @default(30)
   ttsVolume         Int         @default(80)
+  voiceId           String      @default("vi-VN-Standard-A")
+  speakingRate      Float       @default(1)
+  pitch             Float       @default(0)
   woodenFishEnabled Boolean     @default(false)
   woodenFishVolume  Int         @default(30)
   live              LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)

@@ -36,7 +36,15 @@ try {
   const result = await speech;
   assert.equal(result.sourceEventId, simulated.eventId);
   assert.ok(result.text?.length > 0);
+  const giftSpeech = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Gift speech timeout')), 30000);
+    socket.once('speech.ready', job => { clearTimeout(timer); resolve(job); });
+  });
+  const gifted = await request(`/lives/${live.id}/simulate`, 'POST', { eventType: 'gift.received', user: { id: 'ai-smoke-viewer', nickname: 'Minh' }, payload: { giftId: 'rose', giftName: 'Hoa hồng', quantity: 1 }, ai: true });
+  const giftResult = await giftSpeech;
+  assert.equal(giftResult.sourceEventId, gifted.eventId);
+  assert.ok(giftResult.text.includes('Hoa hồng'));
   const analytics = await request(`/lives/${live.id}/analytics`);
   assert.equal(Object.keys(analytics.counts).length, 0);
-  console.log('AI smoke passed: simulator → BullMQ → Gemini → Socket.IO; LIVE analytics unchanged');
+  console.log('AI smoke passed: Gemini comment, gift thanks and Socket.IO; LIVE analytics unchanged');
 } finally { socket?.disconnect(); await request(`/lives/${live.id}`, 'DELETE'); }

@@ -14,7 +14,7 @@ Each channel has one owner. Every private route checks ownership in the backend.
 
 The worker currently uses the community `tiktok-live-connector` adapter in explicit `tiktok` mode. TikTok event availability and connection behavior depend on upstream access. The worker uses a Redis lock per channel and reconnects through polling. No `viewer.leave` is fabricated; the overlay expires inactive characters after a configurable TTL.
 
-The scene uses PixiJS geometry and animated transitions. Its character graphics are procedural until licensed sprite assets are available. The same state machine can later drive sprite sheets. A seat is allocated once per viewer and released on leave or inactivity. The overlay serializes speech playback, falls back to browser Vietnamese speech synthesis when Google TTS is unavailable, and lowers YouTube IFrame Player volume during speech.
+The scene uses PixiJS geometry and animated transitions. Its character graphics are procedural until licensed sprite assets are available. The same state machine can later drive sprite sheets. A seat is allocated once per viewer and released on leave or inactivity. The overlay serializes speech playback, falls back to browser Vietnamese speech synthesis when Google TTS is unavailable, and lowers YouTube IFrame Player volume during speech. Voice ID, speaking rate, pitch and volume are stored per LIVE; the Google TTS worker reads those values for synthesis.
 
 ## Security and operations
 
