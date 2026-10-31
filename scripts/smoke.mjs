@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { io } from 'socket.io-client';
 
-const base=process.env.SMOKE_BASE_URL??'http://localhost:8080';
+const base=process.env.SMOKE_BASE_URL??'http://localhost:8090';
 const email=process.env.ADMIN_EMAIL,password=process.env.ADMIN_PASSWORD;
 if(!email||!password)throw new Error('ADMIN_EMAIL and ADMIN_PASSWORD required');
 let cookie='';

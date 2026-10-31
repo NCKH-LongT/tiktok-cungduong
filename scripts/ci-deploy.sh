@@ -9,6 +9,7 @@ if [[ ! $build_number =~ ^[0-9]+$ || ! -r $env_file ]]; then
 fi
 
 export APP_IMAGE="tiktok-cungduong-app:$build_number"
+export HTTP_PORT=8090
 docker image inspect "$APP_IMAGE" >/dev/null
 docker compose --env-file "$env_file" config -q
 docker compose --env-file "$env_file" up -d --no-build --wait

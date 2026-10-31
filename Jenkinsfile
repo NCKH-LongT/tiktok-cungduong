@@ -43,7 +43,7 @@ pipeline {
         stage('Deploy') {
           when { expression { params.DEPLOY } }
           steps {
-            withCredentials([file(credentialsId: 'cungduong-env', variable: 'DEPLOY_ENV')]) {
+            withCredentials([file(credentialsId: 'tiktok-cungduong', variable: 'DEPLOY_ENV')]) {
               sh 'bash scripts/ci-log.sh deploy bash scripts/ci-deploy.sh "$DEPLOY_ENV" "$BUILD_NUMBER"'
             }
           }

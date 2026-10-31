@@ -95,7 +95,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     volumes: ["./infrastructure/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"]
-    ports: ["${HTTP_PORT:-8080}:80"]
+    ports: ["${HTTP_PORT:-8090}:80"]
     depends_on:
       web: { condition: service_started, restart: true }
     restart: unless-stopped

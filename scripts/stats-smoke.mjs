@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 
-const base = process.env.SMOKE_BASE_URL ?? 'http://localhost:8080';
+const base = process.env.SMOKE_BASE_URL ?? 'http://localhost:8090';
 const db = new PrismaClient();
 let cookie = '';
 async function request(path, method = 'GET', body) {
