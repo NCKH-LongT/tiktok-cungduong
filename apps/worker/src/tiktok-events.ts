@@ -1,0 +1,33 @@
+export function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+export function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+export function asNumber(value: unknown): number | undefined {
+  const result = typeof value === 'number' ? value : typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN;
+  return Number.isFinite(result) ? result : undefined;
+}
+
+function identity(value: unknown): string | undefined {
+  const text = asString(value) ?? (typeof value === 'number' && Number.isFinite(value) ? String(value) : undefined);
+  return text && text !== '0' ? text : undefined;
+}
+
+export function normalizeTikTokUser(raw: Record<string, unknown>) {
+  const nested = asRecord(raw.user);
+  const uniqueId = identity(nested.displayId) ?? identity(nested.uniqueId) ?? identity(raw.uniqueId);
+  const id = identity(nested.id) ?? identity(raw.userId) ?? uniqueId;
+  if (!id) return undefined;
+  return {
+    id,
+    uniqueId,
+    nickname: asString(nested.nickname) ?? asString(raw.nickname) ?? uniqueId ?? 'Người xem',
+  };
+}
+
+export function normalizeTikTokComment(raw: Record<string, unknown>): string {
+  return asString(raw.content) ?? asString(raw.comment) ?? '';
+}

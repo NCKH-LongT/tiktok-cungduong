@@ -10,6 +10,7 @@
     "test": "npm run build -w @cd/shared && npm run test -w @cd/api && npm run test -w @cd/web && npm run test -w @cd/worker",
     "test:smoke": "node scripts/smoke.mjs",
     "test:ai-smoke": "node scripts/ai-smoke.mjs",
+    "test:stats-smoke": "node scripts/stats-smoke.mjs",
     "typecheck": "npm run typecheck -w @cd/api && npm run typecheck -w @cd/web && npm run typecheck -w @cd/worker"
   },
   "devDependencies": {

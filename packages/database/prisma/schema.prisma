@@ -132,12 +132,14 @@ model LiveChannel {
 model LiveSession {
   id        String      @id @default(uuid()) @db.Uuid
   liveId    String      @db.Uuid
+  roomId    String?
   startedAt DateTime    @default(now())
   endedAt   DateTime?
   live      LiveChannel @relation(fields: [liveId], references: [id], onDelete: Cascade)
   events    LiveEvent[]
 
   @@index([liveId, startedAt])
+  @@index([liveId, roomId])
 }
 
 model LiveEvent {
@@ -156,6 +158,7 @@ model LiveEvent {
 
   @@index([liveId, createdAt])
   @@index([liveId, type, createdAt])
+  @@index([liveId, sessionId, source, type, createdAt])
 }
 
 model Viewer {

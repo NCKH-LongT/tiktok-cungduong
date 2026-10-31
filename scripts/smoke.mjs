@@ -32,9 +32,11 @@ try{
   const forbidden=await request(`/lives/${id}`);assert.equal(forbidden.status,404);
   const forbiddenWrite=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.join',user:{id:'x',nickname:'x'},payload:{}})});assert.equal(forbiddenWrite.status,404);
  }finally{cookie=adminCookie;await request('/users/'+secondary.data.id,{method:'DELETE'})}
- const snapshot=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(snapshot.status,200);assert(snapshot.data.events.length>=2);assert.equal(snapshot.data.leaderboard.length,0);assert.equal(snapshot.data.audio.voiceId,'vi-VN-Standard-D');
+ const snapshot=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(snapshot.status,200);assert(snapshot.data.events.length>=2);assert.equal(snapshot.data.leaderboard.length,0);assert.equal(snapshot.data.audio.voiceId,'vi-VN-Standard-D');assert(snapshot.data.activeViewers.some(viewer=>viewer.userKey==='viewer-1'));
+ const left=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.leave',user:{id:'viewer-1',nickname:'Minh'},payload:{}})});assert.equal(left.status,201);
+ const afterLeave=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(afterLeave.status,200);assert(!afterLeave.data.activeViewers.some(viewer=>viewer.userKey==='viewer-1'));
  const analytics=await request(`/lives/${id}/analytics`);assert.equal(analytics.status,200);assert.equal(Object.keys(analytics.data.counts).length,0);
  await request(`/lives/${id}/overlay-token/revoke`,{method:'POST'});
  const revoked=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(revoked.status,401);
- console.log('Smoke passed: auth, tenant isolation, LIVE, voice config, simulator, Socket.IO, snapshot, analytics isolation, token revoke');
+ console.log('Smoke passed: auth, tenant isolation, LIVE, voice config, join/leave presence, Socket.IO, snapshot, analytics isolation, token revoke');
 }finally{socket?.disconnect();await request(`/lives/${id}`,{method:'DELETE'})}

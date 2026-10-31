@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { createHash, randomBytes } from 'node:crypto';
 import { NestFactory } from '@nestjs/core';
 import { Module, Injectable, Controller, Get, Post, Put, Patch, Delete, Body, Param, Query, Req, Res, UseGuards, CanActivate, ExecutionContext, HttpException, HttpStatus } from '@nestjs/common';
-import { PrismaClient, RoleCode, EventSource } from '@prisma/client';
+import { Prisma, PrismaClient, RoleCode, EventSource } from '@prisma/client';
 import argon2 from 'argon2';
 import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
@@ -23,7 +23,7 @@ const parse = <T extends z.ZodType>(schema: T, input: unknown): z.infer<T> => {
 const uuid = z.uuid();
 const loginSchema = z.object({ login: z.string().min(3), password: z.string().min(1), turnstileToken: z.string().optional() });
 const liveSchema = z.object({ uniqueId: z.string().trim().regex(/^@?[a-zA-Z0-9_.]{2,32}$/).transform(value => value.replace(/^@/, '')), title: z.string().min(1).max(100) });
-const simulationSchema = z.object({ eventType: z.enum(['viewer.join','viewer.leave','chat.comment','viewer.like','viewer.share','viewer.follow','gift.received']), user: z.object({ id: z.string().max(100), nickname: z.string().max(100) }), payload: z.record(z.string(), z.unknown()).default({}), ai: z.boolean().default(false) });
+const simulationSchema = z.object({ eventType: z.enum(['viewer.join','viewer.leave','chat.comment','viewer.like','viewer.share','viewer.follow','gift.received','room.stats']), user: z.object({ id: z.string().max(100), nickname: z.string().max(100) }).optional(), payload: z.record(z.string(), z.unknown()).default({}), ai: z.boolean().default(false) });
 type AuthedRequest = Request & { principal?: { id: string; role: RoleCode; sessionId: string } };
 
 @Injectable()
@@ -67,8 +67,10 @@ class Services {
     const userKey = event.user?.id ?? event.user?.uniqueId ?? null;
     const created = await this.db.liveEvent.createMany({ data: [{ eventId: event.eventId, liveId: event.liveId, sessionId: event.sessionId ?? null, source: event.source, type: event.eventType, userKey, payload: event as object, occurredAt: new Date(event.timestamp) }], skipDuplicates: true });
     if (!created.count) return false;
-    if (userKey && event.user) {
-      await this.db.viewer.upsert({ where: { liveId_userKey: { liveId: event.liveId, userKey } }, create: { liveId: event.liveId, userKey, nickname: event.user.nickname, avatarUrl: event.user.avatarUrl }, update: { nickname: event.user.nickname, lastSeenAt: new Date() } });
+    if (userKey && event.eventType === 'viewer.leave') {
+      await this.db.viewer.updateMany({ where: { liveId: event.liveId, userKey }, data: { deletedAt: new Date() } });
+    } else if (userKey && event.user) {
+      await this.db.viewer.upsert({ where: { liveId_userKey: { liveId: event.liveId, userKey } }, create: { liveId: event.liveId, userKey, nickname: event.user.nickname, avatarUrl: event.user.avatarUrl }, update: { nickname: event.user.nickname, lastSeenAt: new Date(), deletedAt: null } });
     }
     if (event.eventType === 'gift.received' && event.payload.repeatEnd !== false) {
       const p = event.payload;
@@ -168,9 +170,51 @@ class LivesController {
   @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); await this.s.db.liveChannel.update({ where: { id }, data: { deletedAt: new Date(), status: 'stopped' } }); await this.s.db.overlayToken.updateMany({ where: { liveId: id }, data: { revokedAt: new Date() } }); return { ok: true }; }
   @Post(':id/connect') async connect(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); if (process.env.TIKTOK_CONNECTOR_MODE !== 'tiktok') fail(503, 'TikTok connector disabled; use simulator'); await this.s.db.liveChannel.update({ where: { id }, data: { status: 'connecting' } }); return { status: 'connecting' }; }
   @Post(':id/disconnect') async disconnect(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); await this.s.db.liveChannel.update({ where: { id }, data: { status: 'stopped' } }); return { status: 'stopped' }; }
-  @Get(':id/status') async status(@Req() req: AuthedRequest, @Param('id') id: string) { const live = await this.s.live(id, req); return { status: live!.status, lastConnectedAt: live!.lastConnectedAt }; }
+  @Get(':id/status') async status(@Req() req: AuthedRequest, @Param('id') id: string) { const live = await this.s.live(id, req); const lastEvent = await this.s.db.liveEvent.findFirst({ where: { liveId: id, source: EventSource.tiktok }, orderBy: { createdAt: 'desc' }, select: { occurredAt: true } }); return { status: live!.status, lastConnectedAt: live!.lastConnectedAt, lastEventAt: lastEvent?.occurredAt ?? null }; }
   @Get(':id/events') async events(@Req() req: AuthedRequest, @Param('id') id: string, @Query('limit') limit?: string) { await this.s.live(id, req); return this.s.db.liveEvent.findMany({ where: { liveId: id }, orderBy: { createdAt: 'desc' }, take: Math.min(100, Math.max(1, Number(limit) || 50)) }); }
-  @Get(':id/analytics') async analytics(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); const grouped = await this.s.db.liveEvent.groupBy({ by: ['type'], where: { liveId: id, source: 'tiktok' }, _count: true }); return { counts: Object.fromEntries(grouped.map(x => [x.type, x._count])), leaderboard: await this.s.leaderboard(id) }; }
+  @Get(':id/analytics') async analytics(@Req() req: AuthedRequest, @Param('id') id: string) {
+    const live = (await this.s.live(id, req))!;
+    const session = await this.s.db.liveSession.findFirst({ where: { liveId: id, events: { some: { type: 'room.connected' } } }, orderBy: { startedAt: 'desc' } });
+    if (!session) return { counts: {}, currentViewers: null, totalViewers: null, uniqueJoiners: 0, likeEvents: 0, hearts: 0, shares: 0, comments: 0, giftEvents: 0, gifts: 0, recentComments: [], recentGifts: [], topGifts: [], leaderboard: [] };
+    const sessions = session.roomId ? await this.s.db.liveSession.findMany({ where: { liveId: id, roomId: session.roomId }, select: { id: true, startedAt: true } }) : [session];
+    const sessionIds = sessions.map(item => item.id);
+    const startedAt = sessions.reduce((earliest, item) => item.startedAt < earliest ? item.startedAt : earliest, session.startedAt);
+    const where = { liveId: id, sessionId: { in: sessionIds }, source: EventSource.tiktok };
+    const [grouped, latestRoomStats, commentRows, giftTotals, giftRows, topGiftRows, summary] = await Promise.all([
+      this.s.db.liveEvent.groupBy({ by: ['type'], where, _count: true }),
+      this.s.db.liveEvent.findFirst({ where: { ...where, type: 'room.stats' }, orderBy: { createdAt: 'desc' }, select: { payload: true, occurredAt: true } }),
+      this.s.db.liveEvent.findMany({ where: { ...where, type: 'chat.comment' }, orderBy: { createdAt: 'desc' }, take: 100, select: { payload: true, occurredAt: true } }),
+      this.s.db.giftEvent.aggregate({ where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: startedAt } }, _count: true, _sum: { quantity: true } }),
+      this.s.db.giftEvent.findMany({ where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: startedAt } }, orderBy: { occurredAt: 'desc' }, take: 20, select: { nickname: true, giftName: true, quantity: true, occurredAt: true } }),
+      this.s.db.giftEvent.groupBy({ by: ['giftName'], where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: startedAt } }, _sum: { quantity: true }, orderBy: { _sum: { quantity: 'desc' } }, take: 5 }),
+      this.s.db.$queryRaw<{ uniqueJoiners: bigint; hearts: bigint }[]>(Prisma.sql`
+        SELECT COUNT(DISTINCT CASE WHEN type = 'viewer.join' THEN "userKey" END)::bigint AS "uniqueJoiners",
+               COALESCE(SUM(CASE WHEN type = 'viewer.like' AND (payload->'payload'->>'count') ~ '^[0-9]+$'
+                 THEN (payload->'payload'->>'count')::bigint ELSE 0 END), 0)::bigint AS hearts
+        FROM "LiveEvent" WHERE "liveId" = ${id}::uuid AND "sessionId" IN (${Prisma.join(sessionIds.map(value => Prisma.sql`${value}::uuid`))}) AND source = 'tiktok'
+      `),
+    ]);
+    const counts = Object.fromEntries(grouped.map(row => [row.type, row._count]));
+    const room = (latestRoomStats?.payload as { payload?: { viewerCount?: number; totalViewers?: number } } | null)?.payload;
+    return {
+      sessionStartedAt: startedAt,
+      counts,
+      currentViewers: live.status === 'connected' && typeof room?.viewerCount === 'number' ? room.viewerCount : live.status === 'unavailable' || live.status === 'stopped' ? 0 : null,
+      totalViewers: typeof room?.totalViewers === 'number' ? room.totalViewers : null,
+      roomStatsAt: latestRoomStats?.occurredAt ?? null,
+      uniqueJoiners: Number(summary[0]?.uniqueJoiners ?? 0),
+      likeEvents: counts['viewer.like'] ?? 0,
+      hearts: Number(summary[0]?.hearts ?? 0),
+      shares: counts['viewer.share'] ?? 0,
+      comments: counts['chat.comment'] ?? 0,
+      giftEvents: giftTotals._count,
+      gifts: giftTotals._sum.quantity ?? 0,
+      recentComments: commentRows.map(row => { const event = row.payload as { user?: { nickname?: string }; payload?: { text?: string } }; return { nickname: event.user?.nickname ?? 'Người xem', text: event.payload?.text ?? '', at: row.occurredAt }; }).filter(item => item.text.trim()).slice(0, 30),
+      recentGifts: giftRows.map(row => ({ nickname: row.nickname ?? 'Người xem', giftName: row.giftName, quantity: row.quantity, at: row.occurredAt })),
+      topGifts: topGiftRows.map(row => ({ giftName: row.giftName, quantity: row._sum.quantity ?? 0 })),
+      leaderboard: await this.s.leaderboard(id),
+    };
+  }
   @Get(':id/ai-config') async ai(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.aIConfiguration.findUnique({ where: { liveId: id }, select: { enabled: true, personality: true, customPrompt: true, cooldownMs: true, maxPerMinute: true } }); }
   @Put(':id/ai-config') async setAi(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ enabled: z.boolean().optional(), personality: z.string().max(100).optional(), customPrompt: z.string().max(2000).nullable().optional(), cooldownMs: z.number().int().min(1000).max(3600000).optional(), maxPerMinute: z.number().int().min(1).max(60).optional() }), body); return this.s.db.aIConfiguration.update({ where: { liveId: id }, data: d }); }
   @Get(':id/audio-config') async audio(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.audioConfiguration.findUnique({ where: { liveId: id } }); }
@@ -187,7 +231,24 @@ class LivesController {
 @Controller('overlay')
 class OverlayController {
   constructor(private readonly s: Services) {}
-  @Get(':id/snapshot') async snapshot(@Param('id') id: string, @Query('token') token: string) { await this.s.overlay(id, token); const events = await this.s.db.liveEvent.findMany({ where: { liveId: id }, orderBy: { createdAt: 'desc' }, take: 50, select: { payload: true } }); return { events: events.reverse().map(x => x.payload), leaderboard: await this.s.leaderboard(id), scene: await this.s.db.sceneConfiguration.findUnique({ where: { liveId: id } }), audio: await this.s.db.audioConfiguration.findUnique({ where: { liveId: id }, select: { woodenFishEnabled: true, woodenFishVolume: true, musicVolume: true, musicUrl: true, ttsVolume: true, voiceId: true, speakingRate: true, pitch: true } }) }; }
+  @Get(':id/snapshot') async snapshot(@Param('id') id: string, @Query('token') token: string) {
+    await this.s.overlay(id, token);
+    const scene = await this.s.db.sceneConfiguration.findUnique({ where: { liveId: id } });
+    const cutoff = new Date(Date.now() - (scene?.inactiveTtlSeconds ?? 900) * 1000);
+    const session = await this.s.db.liveSession.findFirst({ where: { liveId: id, events: { some: { type: 'room.connected' } } }, orderBy: { startedAt: 'desc' } });
+    const sessionIds = session?.roomId ? (await this.s.db.liveSession.findMany({ where: { liveId: id, roomId: session.roomId }, select: { id: true } })).map(item => item.id) : session ? [session.id] : [];
+    const [events, viewers, roomStats, leaderboard, audio, live] = await Promise.all([
+      this.s.db.liveEvent.findMany({ where: { liveId: id, type: { not: 'room.stats' }, occurredAt: { gte: cutoff } }, orderBy: { createdAt: 'desc' }, take: 50, select: { payload: true } }),
+      this.s.db.viewer.findMany({ where: { liveId: id, deletedAt: null, lastSeenAt: { gte: cutoff }, userKey: { not: '0' } }, orderBy: { lastSeenAt: 'desc' }, take: Math.min(40, scene?.maxCharacters ?? 40), select: { userKey: true, nickname: true, lastSeenAt: true } }),
+      sessionIds.length ? this.s.db.liveEvent.findFirst({ where: { liveId: id, sessionId: { in: sessionIds }, type: 'room.stats' }, orderBy: { createdAt: 'desc' }, select: { payload: true } }) : null,
+      this.s.leaderboard(id),
+      this.s.db.audioConfiguration.findUnique({ where: { liveId: id }, select: { woodenFishEnabled: true, woodenFishVolume: true, musicVolume: true, musicUrl: true, ttsVolume: true, voiceId: true, speakingRate: true, pitch: true } }),
+      this.s.db.liveChannel.findUnique({ where: { id }, select: { status: true } }),
+    ]);
+    const latestRoomStats = roomStats?.payload as LiveEvent | undefined;
+    const stoppedRoomStats = latestRoomStats && live?.status !== 'connected' ? { ...latestRoomStats, payload: { ...latestRoomStats.payload, viewerCount: 0 } } : null;
+    return { events: events.reverse().map(x => x.payload), activeViewers: viewers, roomStats: stoppedRoomStats ?? latestRoomStats ?? null, leaderboard, scene, audio };
+  }
 }
 
 @Module({ controllers: [HealthController, AuthController, UsersController, LivesController, OverlayController], providers: [Services, SessionGuard] })

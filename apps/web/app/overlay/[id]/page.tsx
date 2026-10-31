@@ -22,11 +22,13 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   useEffect(() => {
     let app: Application | undefined, socket: Socket | undefined, disposed = false;
     let scene: Container, camera: Container, audioContext: AudioContext | undefined;
-    let ttl = 900000, maxPeople = 40, fishEnabled = false, fishVolume = .3, ttsVolume = .8, ttsRate = 1, ttsPitch = 0, musicBase = 30, currentMusic = 30;
+    let ttl = 900000, maxPeople = 40, reducedMotion = false, fishEnabled = false, fishVolume = .3, ttsVolume = .8, ttsRate = 1, ttsPitch = 0, musicBase = 30, currentMusic = 30;
+    let nextAmbientBowAt = Date.now() + 12000;
     let duckTimer: ReturnType<typeof setInterval> | undefined, currentAudio: HTMLAudioElement | undefined;
     let activeGift: { key: string; until: number } | null = null, speaking = false;
     const giftQueue: string[] = [], speechQueue: Speech[] = [];
     const people = new Map<string, Person>();
+    const pendingJoins = new Map<string, LiveEvent>();
     const seatColumns = [255, 635, 110, 790, 365];
     const seats = Array.from({ length: 40 }, (_, index) => ({ x: seatColumns[index % 5], y: 1010 + Math.floor(index / 5) * 70, occupied: false }));
     let Pixi: typeof import('pixi.js') | undefined;
@@ -56,12 +58,30 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
         osc.start(); osc.stop(audioContext.currentTime + .21);
       } catch { /* Audio may be blocked by browser policy. */ }
     }
+    function leave(person: Person) {
+      if (person.state === 'leaving') return;
+      person.state = 'leaving';
+      person.targetX = 450; person.targetY = 1590;
+      setPose(person, 'standing');
+    }
     function spawn(event: LiveEvent) {
       const key = event.user?.id ?? event.user?.uniqueId;
       if (!key || !scene || !Pixi || !poses) return;
       const existing = people.get(key);
-      if (existing) { existing.last = Date.now(); return existing; }
-      if (people.size >= maxPeople) return;
+      if (existing) {
+        existing.last = Date.now();
+        if (existing.state === 'leaving') { existing.state = 'walking'; existing.targetX = seats[existing.seat].x; existing.targetY = seats[existing.seat].y; }
+        return existing;
+      }
+      if (people.size >= maxPeople) {
+        if (event.eventType === 'viewer.join') {
+          pendingJoins.set(key, event);
+          if (pendingJoins.size > 40) pendingJoins.delete(pendingJoins.keys().next().value!);
+          const oldest = [...people.values()].filter(person => person.state !== 'leaving').sort((a, b) => a.last - b.last)[0];
+          if (oldest) leave(oldest);
+        }
+        return;
+      }
       const seat = seats.findIndex(item => !item.occupied);
       if (seat < 0) return;
       seats[seat].occupied = true;
@@ -84,10 +104,20 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       return person;
     }
     function onEvent(event: LiveEvent) {
+      if (event.eventType === 'room.stats') {
+        const count = event.payload.viewerCount;
+        if (typeof count === 'number' && Number.isFinite(count) && count >= 0) {
+          const active = [...people.values()].filter(person => person.state !== 'leaving').sort((a, b) => a.last - b.last);
+          for (const person of active.slice(0, Math.max(0, active.length - count))) leave(person);
+          if (count === 0) pendingJoins.clear();
+        }
+        return;
+      }
       const key = event.user?.id ?? event.user?.uniqueId ?? '';
       if (event.eventType === 'viewer.leave') {
         const person = people.get(key);
-        if (person) { person.state = 'leaving'; person.targetX = 450; person.targetY = 1590; setPose(person, 'standing'); }
+        pendingJoins.delete(key);
+        if (person) leave(person);
         return;
       }
       const person = spawn(event);
@@ -202,7 +232,20 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           person.body.x = person.x; person.body.y = person.y;
           person.glow.alpha = now < person.highlightUntil ? .75 + Math.sin(now / 120) * .15 : 0;
           if (person.bubbleUntil && now > person.bubbleUntil) { person.label.text = person.name; person.bubbleUntil = 0; }
-          if (now - person.last > ttl && person.state !== 'leaving') { person.state = 'leaving'; person.targetX = 450; person.targetY = 1590; setPose(person, 'standing'); }
+          if (now - person.last > ttl) leave(person);
+        }
+        while (pendingJoins.size && people.size < maxPeople && seats.some(seat => !seat.occupied)) {
+          const [key, event] = pendingJoins.entries().next().value!;
+          pendingJoins.delete(key);
+          spawn(event);
+        }
+        if (now >= nextAmbientBowAt) {
+          nextAmbientBowAt = now + 8000 + Math.random() * 14000;
+          if (!reducedMotion) {
+            const resting = [...people.values()].filter(person => person.state === 'kneeling');
+            const person = resting[Math.floor(Math.random() * resting.length)];
+            if (person) { person.state = 'bowing'; person.phaseUntil = now + 950; setPose(person, 'bowing'); }
+          }
         }
         if (!activeGift && giftQueue.length) activeGift = { key: giftQueue.shift()!, until: now + 3500 };
         if (activeGift && now > activeGift.until) activeGift = null;
@@ -223,6 +266,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       if (disposed) return;
       maxPeople = snapshot.scene?.maxCharacters ?? 40;
       ttl = (snapshot.scene?.inactiveTtlSeconds ?? 900) * 1000;
+      reducedMotion = Boolean(snapshot.scene?.reducedMotion);
       fishEnabled = Boolean(snapshot.audio?.woodenFishEnabled);
       fishVolume = (snapshot.audio?.woodenFishVolume ?? 30) / 100;
       ttsVolume = (snapshot.audio?.ttsVolume ?? 80) / 100;
@@ -234,6 +278,12 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       setMusicUrl(snapshot.audio?.musicUrl ?? '');
       setLeaders(snapshot.leaderboard ?? []);
       for (const event of snapshot.events ?? []) onEvent(event);
+      for (const viewer of snapshot.activeViewers ?? []) {
+        if (people.has(viewer.userKey)) continue;
+        const person = spawn({ eventId: 'restore:' + viewer.userKey, eventType: 'viewer.join', source: 'tiktok', user: { id: viewer.userKey, nickname: viewer.nickname ?? 'Phật tử' }, payload: {} });
+        if (person) person.last = new Date(viewer.lastSeenAt).getTime();
+      }
+      if (snapshot.roomStats) onEvent(snapshot.roomStats);
       socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || undefined, { auth: { liveId: id, overlayToken: token } });
       socket.on('connect', () => setStatus('Đã kết nối'));
       socket.on('disconnect', () => setStatus('Mất kết nối · đang thử lại'));

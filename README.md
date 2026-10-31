@@ -16,6 +16,8 @@ The default `TIKTOK_CONNECTOR_MODE=simulator` never contacts TikTok. Set it to `
 
 The OBS scene loads `apps/web/public/overlay/chanhdien.png` and the standing, kneeling and bowing frames from `apps/web/public/overlay/nhanvat01.png`. A new viewer enters from the bottom, walks to a free place, kneels, bows once, then remains kneeling until leaving or inactivity timeout.
 
+The LIVE dashboard shows current room viewers and total viewers from TikTok `ROOM_USER`, unique join IDs, comments, gift totals, like events, heart counts and shares for the latest broadcast room. It combines successful worker sessions with the same TikTok room ID, and lists recent comments and gifts. Older records created before room IDs were stored fall back to their last successful worker session. TikTok does not send a reliable per-viewer leave event in this connector; the overlay removes the least recently active characters when the reported room count drops, or when their inactivity timeout expires. Resting characters bow occasionally for ambient motion; reduced-motion mode disables those extra bows. The Simulator can emit a room count to test inferred departures. The worker retries an unavailable LIVE with backoff and reconnects if its stream becomes stale.
+
 YouTube music uses the official IFrame Player API and stays visible in the overlay. Autoplay can be blocked; use the player button or OBS Browser Source interaction to start it. Audio from the overlay is what OBS captures. Use music you have permission to play.
 
 ## VPS and CI/CD
@@ -28,4 +30,4 @@ PostgreSQL and Redis use named volumes. Back up with `docker compose exec -T pos
 
 ## Developer commands
 
-`npm run db:generate` generates Prisma client. `npm run db:migrate` applies checked-in migrations. `npm run db:bootstrap` creates the admin from environment variables. `npm test` runs unit tests. `npm run typecheck` verifies TypeScript. `npm run test:smoke` exercises the running stack from login through simulator and token revoke; set `SMOKE_BASE_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in the shell. With a configured Gemini worker, `npm run test:ai-smoke` checks the simulator → Gemini → speech socket path. See [architecture](docs/ARCHITECTURE.md) and [plan](docs/IMPLEMENTATION_PLAN.md).
+`npm run db:generate` generates Prisma client. `npm run db:migrate` applies checked-in migrations. `npm run db:bootstrap` creates the admin from environment variables. `npm test` runs unit tests. `npm run typecheck` verifies TypeScript. `npm run test:smoke` exercises the running stack from login through simulator and token revoke; set `SMOKE_BASE_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in the shell. `npm run test:stats-smoke` checks session-scoped analytics against a temporary database fixture. With a configured Gemini worker, `npm run test:ai-smoke` checks the simulator → Gemini → speech socket path. See [architecture](docs/ARCHITECTURE.md) and [plan](docs/IMPLEMENTATION_PLAN.md).
