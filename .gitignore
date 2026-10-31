@@ -8,4 +8,5 @@ coverage/
 *.log
 *.tsbuildinfo
 secrets/
+gcp-tts-sa.json
 !.gitkeep

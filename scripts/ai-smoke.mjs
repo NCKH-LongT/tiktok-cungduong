@@ -15,6 +15,11 @@ async function request(path, method = 'GET', body) {
 }
 await request('/auth/login', 'POST', { login: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD });
 const suffix = randomUUID().slice(0, 8);
+const adminCookie = cookie;
+const testEmail = `ai_smoke_${suffix}@example.invalid`;
+const testPassword = randomUUID() + randomUUID();
+const testUser = await request('/users', 'POST', { email: testEmail, username: 'ai_smoke_' + suffix, password: testPassword });
+await request('/auth/login', 'POST', { login: testEmail, password: testPassword });
 const live = await request('/lives', 'POST', { uniqueId: 'ai_smoke_' + suffix, title: 'AI smoke ' + suffix });
 let socket;
 try {
@@ -36,6 +41,7 @@ try {
   const result = await speech;
   assert.equal(result.sourceEventId, simulated.eventId);
   assert.ok(result.text?.length > 0);
+  if (process.env.EXPECT_TTS_AUDIO === '1') assert.ok(result.audio?.length > 100, 'Google TTS did not return audio');
   const giftSpeech = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Gift speech timeout')), 30000);
     socket.once('speech.ready', job => { clearTimeout(timer); resolve(job); });
@@ -44,7 +50,16 @@ try {
   const giftResult = await giftSpeech;
   assert.equal(giftResult.sourceEventId, gifted.eventId);
   assert.ok(giftResult.text.includes('Hoa hồng'));
+  if (process.env.EXPECT_TTS_AUDIO === '1') assert.ok(giftResult.audio?.length > 100, 'Gift reply has no Google TTS audio');
+  const history = await request(`/lives/${live.id}/ai-history`);
+  assert.ok(history.some(item => item.answer === result.text));
+  assert.ok(history.some(item => item.answer === giftResult.text));
   const analytics = await request(`/lives/${live.id}/analytics`);
   assert.equal(Object.keys(analytics.counts).length, 0);
   console.log('AI smoke passed: Gemini comment, gift thanks and Socket.IO; LIVE analytics unchanged');
-} finally { socket?.disconnect(); await request(`/lives/${live.id}`, 'DELETE'); }
+} finally {
+  socket?.disconnect();
+  await request(`/lives/${live.id}`, 'DELETE');
+  cookie = adminCookie;
+  await request(`/users/${testUser.id}`, 'DELETE');
+}

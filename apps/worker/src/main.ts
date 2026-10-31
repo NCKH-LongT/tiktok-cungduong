@@ -98,7 +98,15 @@ async function runAI() {
     }
     await db.aIInteraction.create({ data: { liveId: input.liveId, sourceEventId: input.eventId, answer: text, status: 'completed' } });
     let audio: string | undefined;
-    if (tts) { const voice = await db.audioConfiguration.findUnique({ where: { liveId: input.liveId } }); const [result] = await tts.synthesizeSpeech({ input: { text }, voice: { languageCode: 'vi-VN', name: voice?.voiceId ?? 'vi-VN-Standard-A' }, audioConfig: { audioEncoding: 'MP3', speakingRate: voice?.speakingRate ?? 1, pitch: voice?.pitch ?? 0 } }); audio = Buffer.from(result.audioContent ?? '').toString('base64'); }
+    if (tts) {
+      try {
+        const voice = await db.audioConfiguration.findUnique({ where: { liveId: input.liveId } });
+        const [result] = await tts.synthesizeSpeech({ input: { text }, voice: { languageCode: 'vi-VN', name: voice?.voiceId ?? 'vi-VN-Standard-A' }, audioConfig: { audioEncoding: 'MP3', speakingRate: voice?.speakingRate ?? 1, pitch: voice?.pitch ?? 0 } });
+        audio = Buffer.from(result.audioContent ?? '').toString('base64') || undefined;
+      } catch (error) {
+        console.warn('Google TTS unavailable; sending Vietnamese text for browser speech:', errorMessage(error));
+      }
+    }
     await redis.publish('speech.ready', JSON.stringify({ liveId: input.liveId, text, audio, sourceEventId: input.eventId }));
   }, { connection: redis, concurrency: 2 });
   while (!stopping) await new Promise(resolve => setTimeout(resolve, 1000));

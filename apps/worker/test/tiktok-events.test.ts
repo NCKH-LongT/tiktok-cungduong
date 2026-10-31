@@ -22,3 +22,9 @@ test('chat content is read from the TikTok protobuf content field', () => {
   assert.equal(normalizeTikTokComment({ content: 'Xin chào' }), 'Xin chào');
   assert.equal(normalizeTikTokComment({ comment: 'Legacy' }), 'Legacy');
 });
+
+test('avatar uses the TikTok user image and rejects unsafe URLs', () => {
+  const user = normalizeTikTokUser({ user: { id: '123', avatarLarge: { urlList: ['https://example.invalid/avatar.png'] } } });
+  assert.equal(user?.avatarUrl, 'https://example.invalid/avatar.png');
+  assert.equal(normalizeTikTokUser({ user: { id: '456', avatarThumb: { urlList: ['javascript:alert(1)'] } } })?.avatarUrl, undefined);
+});

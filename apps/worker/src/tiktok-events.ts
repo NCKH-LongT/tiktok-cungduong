@@ -21,10 +21,18 @@ export function normalizeTikTokUser(raw: Record<string, unknown>) {
   const uniqueId = identity(nested.displayId) ?? identity(nested.uniqueId) ?? identity(raw.uniqueId);
   const id = identity(nested.id) ?? identity(raw.userId) ?? uniqueId;
   if (!id) return undefined;
+  const avatar = [nested.avatarLarge, nested.avatarMedium, nested.avatarThumb]
+    .map(image => asRecord(image).urlList)
+    .flatMap(urls => Array.isArray(urls) ? urls : []);
+  const avatarUrl = [...avatar, raw.profilePictureUrl].find(value => {
+    if (typeof value !== 'string') return false;
+    try { return new URL(value).protocol === 'https:'; } catch { return false; }
+  }) as string | undefined;
   return {
     id,
     uniqueId,
     nickname: asString(nested.nickname) ?? asString(raw.nickname) ?? uniqueId ?? 'Người xem',
+    avatarUrl,
   };
 }
 

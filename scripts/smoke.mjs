@@ -21,7 +21,8 @@ try{
  socket=io(process.env.SMOKE_SOCKET_URL??base,{auth:{liveId:id,overlayToken:overlay.searchParams.get('token')},transports:['websocket']});
  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Socket connect timeout')),5000);socket.once('connect',()=>{clearTimeout(timer);resolve()});socket.once('connect_error',error=>{clearTimeout(timer);reject(error)})});
  const received=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Socket event timeout')),5000);socket.once('live.event',event=>{clearTimeout(timer);resolve(event)})});
- const joined=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.join',user:{id:'viewer-1',nickname:'Minh'},payload:{}})});assert.equal(joined.status,201);
+ const avatarUrl=base+'/overlay/chanhdien.png';
+ const joined=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.join',user:{id:'viewer-1',nickname:'Minh',avatarUrl},payload:{}})});assert.equal(joined.status,201);
  assert.equal((await received).eventId,joined.data.eventId);
  const gift=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'gift.received',user:{id:'viewer-1',nickname:'Minh'},payload:{giftName:'Hoa hồng',giftId:'rose',quantity:1}})});assert.equal(gift.status,201);
  const adminCookie=cookie;
@@ -32,7 +33,7 @@ try{
   const forbidden=await request(`/lives/${id}`);assert.equal(forbidden.status,404);
   const forbiddenWrite=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.join',user:{id:'x',nickname:'x'},payload:{}})});assert.equal(forbiddenWrite.status,404);
  }finally{cookie=adminCookie;await request('/users/'+secondary.data.id,{method:'DELETE'})}
- const snapshot=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(snapshot.status,200);assert(snapshot.data.events.length>=2);assert.equal(snapshot.data.leaderboard.length,0);assert.equal(snapshot.data.audio.voiceId,'vi-VN-Standard-D');assert(snapshot.data.activeViewers.some(viewer=>viewer.userKey==='viewer-1'));
+ const snapshot=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(snapshot.status,200);assert(snapshot.data.events.length>=2);assert.equal(snapshot.data.leaderboard.length,0);assert.equal(snapshot.data.audio.voiceId,'vi-VN-Standard-D');assert(snapshot.data.activeViewers.some(viewer=>viewer.userKey==='viewer-1'&&viewer.avatarUrl===avatarUrl));
  const left=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.leave',user:{id:'viewer-1',nickname:'Minh'},payload:{}})});assert.equal(left.status,201);
  const afterLeave=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(afterLeave.status,200);assert(!afterLeave.data.activeViewers.some(viewer=>viewer.userKey==='viewer-1'));
  const analytics=await request(`/lives/${id}/analytics`);assert.equal(analytics.status,200);assert.equal(Object.keys(analytics.data.counts).length,0);

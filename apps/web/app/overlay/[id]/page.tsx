@@ -3,21 +3,28 @@ import { use, useEffect, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import type { Application, Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
 import MusicPlayer, { type YouTubePlayer } from './music';
+import BuddhistUserBadge from './BuddhistUserBadge';
 
-type LiveEvent = { eventId: string; eventType: string; source: string; user?: { id?: string; uniqueId?: string; nickname?: string }; payload: Record<string, unknown> };
-type Person = { key: string; name: string; seat: number; body: Container; sprite: Sprite; glow: Graphics; label: Text; state: 'walking' | 'lowering' | 'bowing' | 'kneeling' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; phaseUntil: number; highlightUntil: number };
+type LiveEvent = { eventId: string; eventType: string; source: string; user?: { id?: string; uniqueId?: string; nickname?: string; avatarUrl?: string }; payload: Record<string, unknown> };
+type Person = { key: string; name: string; avatarUrl?: string; seat: number; body: Container; sprite: Sprite; glow: Graphics; label: Text; state: 'walking' | 'lowering' | 'bowing' | 'kneeling' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; phaseUntil: number; highlightUntil: number };
+type Badge = { key: string; name: string; avatarUrl?: string };
 type Speech = { text: string; audio?: string };
 const WIDTH = 900, HEIGHT = 1600;
 
 export default function Overlay({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const holder = useRef<HTMLDivElement>(null);
+  const badgeRefs = useRef(new Map<string, HTMLDivElement>());
   const musicPlayer = useRef<YouTubePlayer | null>(null);
+  const retryVoiceRef = useRef<(() => void) | null>(null);
+  const lastSpeechRef = useRef<Speech | null>(null);
   const [status, setStatus] = useState('Đang tải...');
   const [leaders, setLeaders] = useState<{ nickname: string; gifts: number }[]>([]);
   const [speech, setSpeech] = useState('');
   const [musicUrl, setMusicUrl] = useState('');
   const [musicVolume, setMusicVolume] = useState(30);
+  const [badges, setBadges] = useState<Badge[]>([]);
+  const [voiceBlocked, setVoiceBlocked] = useState(false);
 
   useEffect(() => {
     let app: Application | undefined, socket: Socket | undefined, disposed = false;
@@ -25,7 +32,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     let ttl = 900000, maxPeople = 40, reducedMotion = false, fishEnabled = false, fishVolume = .3, ttsVolume = .8, ttsRate = 1, ttsPitch = 0, musicBase = 30, currentMusic = 30;
     let nextAmbientBowAt = Date.now() + 12000;
     let duckTimer: ReturnType<typeof setInterval> | undefined, currentAudio: HTMLAudioElement | undefined;
-    let activeGift: { key: string; until: number } | null = null, speaking = false;
+    let activeGift: { key: string; until: number } | null = null, focusedKey = '', speaking = false;
     const giftQueue: string[] = [], speechQueue: Speech[] = [];
     const people = new Map<string, Person>();
     const pendingJoins = new Map<string, LiveEvent>();
@@ -33,6 +40,17 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     const seats = Array.from({ length: 40 }, (_, index) => ({ x: seatColumns[index % 5], y: 1010 + Math.floor(index / 5) * 70, occupied: false }));
     let Pixi: typeof import('pixi.js') | undefined;
     let poses: { standing: Texture; kneeling: Texture; bowing: Texture } | undefined;
+    let blurFilter: import('pixi.js').BlurFilter | undefined;
+
+    function showBadge(person: Person) {
+      setBadges(current => {
+        const badge = { key: person.key, name: person.name, avatarUrl: person.avatarUrl };
+        const index = current.findIndex(item => item.key === person.key);
+        if (index < 0) return [...current, badge];
+        if (current[index].name === badge.name && current[index].avatarUrl === badge.avatarUrl) return current;
+        return current.map(item => item.key === badge.key ? badge : item);
+      });
+    }
 
     function setPose(person: Person, pose: keyof NonNullable<typeof poses>) {
       if (!poses) return;
@@ -70,6 +88,10 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       const existing = people.get(key);
       if (existing) {
         existing.last = Date.now();
+        let badgeChanged = false;
+        if (event.user?.nickname && existing.name !== event.user.nickname) { existing.name = event.user.nickname; existing.label.text = existing.name.slice(0, 16); badgeChanged = true; }
+        if (event.user?.avatarUrl && existing.avatarUrl !== event.user.avatarUrl) { existing.avatarUrl = event.user.avatarUrl; badgeChanged = true; }
+        if (badgeChanged) showBadge(existing);
         if (existing.state === 'leaving') { existing.state = 'walking'; existing.targetX = seats[existing.seat].x; existing.targetY = seats[existing.seat].y; }
         return existing;
       }
@@ -91,16 +113,19 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       glow.alpha = 0;
       const sprite = new Sprite(poses.standing);
       sprite.anchor.set(.5, 1);
-      const name = (event.user?.nickname ?? 'Phật tử').slice(0, 16);
-      const label = new Text({ text: name, style: { fill: 0xffffff, fontSize: 16, align: 'center' } });
+      const name = event.user?.nickname ?? 'Phật tử';
+      const label = new Text({ text: name.slice(0, 16), style: { fill: 0xffffff, fontSize: 16, align: 'center' } });
       label.anchor.set(.5, 1);
+      label.visible = false;
       body.addChild(glow, sprite, label);
       body.x = 450; body.y = 1590; scene.addChild(body);
       const target = seats[seat];
       body.zIndex = target.y;
-      const person: Person = { key, name, seat, body, sprite, glow, label, state: 'walking', x: 450, y: 1590, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, phaseUntil: 0, highlightUntil: 0 };
+      const person: Person = { key, name, avatarUrl: event.user?.avatarUrl, seat, body, sprite, glow, label, state: 'walking', x: 450, y: 1590, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, phaseUntil: 0, highlightUntil: 0 };
+      if (focusedKey && key !== focusedKey && blurFilter) body.filters = [blurFilter];
       setPose(person, 'standing');
       people.set(key, person);
+      showBadge(person);
       return person;
     }
     function onEvent(event: LiveEvent) {
@@ -123,9 +148,10 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       const person = spawn(event);
       if (event.eventType === 'chat.comment' && person) {
         person.label.text = String(event.payload.text ?? '').slice(0, 45);
+        person.label.visible = true;
         person.bubbleUntil = Date.now() + 3000;
       }
-      if (event.eventType === 'gift.received' && person) {
+      if (event.eventType === 'gift.received' && person && event.payload.repeatEnd !== false) {
         giftQueue.push(person.key);
         person.highlightUntil = Date.now() + 3500;
         if (person.state === 'kneeling') { person.state = 'bowing'; person.phaseUntil = Date.now() + 1000; setPose(person, 'bowing'); }
@@ -151,28 +177,40 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           const timer = setTimeout(resolve, 20000);
           const done = () => { clearTimeout(timer); resolve(); };
           audio.onended = done; audio.onerror = done;
-          void audio.play().catch(done);
+          void audio.play().then(() => setVoiceBlocked(false)).catch(() => { setVoiceBlocked(true); done(); });
         });
         currentAudio = undefined;
       } else if ('speechSynthesis' in window) {
         await new Promise<void>(resolve => {
           const utterance = new SpeechSynthesisUtterance(job.text);
           utterance.lang = 'vi-VN'; utterance.volume = ttsVolume; utterance.rate = ttsRate; utterance.pitch = Math.max(0, Math.min(2, 1 + ttsPitch / 10));
-          const timer = setTimeout(resolve, 20000);
+          const vietnameseVoice = window.speechSynthesis.getVoices().find(voice => voice.lang.toLowerCase().startsWith('vi'));
+          if (vietnameseVoice) utterance.voice = vietnameseVoice;
+          let started = false;
+          const timer = setTimeout(() => { if (!started) setVoiceBlocked(true); resolve(); }, 20000);
           const done = () => { clearTimeout(timer); resolve(); };
-          utterance.onend = done; utterance.onerror = done;
+          utterance.onstart = () => { started = true; setVoiceBlocked(false); };
+          utterance.onend = done; utterance.onerror = () => { setVoiceBlocked(true); done(); };
           window.speechSynthesis.speak(utterance);
         });
-      }
+      } else setVoiceBlocked(true);
     }
+    retryVoiceRef.current = () => {
+      if (!lastSpeechRef.current) return;
+      window.speechSynthesis?.cancel();
+      void playVoice(lastSpeechRef.current);
+    };
     async function playSpeech() {
       if (speaking) return;
       speaking = true;
       while (speechQueue.length && !disposed) {
         const job = speechQueue.shift()!;
+        lastSpeechRef.current = job;
         setSpeech(job.text);
         duck(Math.round(musicBase * .25));
+        const startedAt = Date.now();
         await playVoice(job);
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, 6000 - (Date.now() - startedAt))));
         duck(musicBase);
         setSpeech('');
       }
@@ -181,7 +219,8 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     async function start() {
       Pixi = await import('pixi.js');
       if (disposed) return;
-      const { Application, Container, Sprite, Texture, Rectangle, Assets } = Pixi;
+      const { Application, Container, Sprite, Texture, Rectangle, Assets, BlurFilter } = Pixi;
+      blurFilter = new BlurFilter({ strength: 4 });
       const [backgroundTexture, sheet] = await Promise.all([
         Assets.load<Texture>('/overlay/chanhdien.png'),
         Assets.load<Texture>('/overlay/nhanvat01.png'),
@@ -211,7 +250,10 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
             if (distance < 5) {
               if (person.state === 'leaving') {
                 scene.removeChild(person.body); person.body.destroy({ children: true });
-                people.delete(person.key); seats[person.seat].occupied = false; continue;
+                people.delete(person.key); seats[person.seat].occupied = false;
+                setBadges(current => current.filter(item => item.key !== person.key));
+                badgeRefs.current.delete(person.key);
+                continue;
               }
               person.state = 'lowering'; person.phaseUntil = now + 650;
               person.body.rotation = 0;
@@ -231,7 +273,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           }
           person.body.x = person.x; person.body.y = person.y;
           person.glow.alpha = now < person.highlightUntil ? .75 + Math.sin(now / 120) * .15 : 0;
-          if (person.bubbleUntil && now > person.bubbleUntil) { person.label.text = person.name; person.bubbleUntil = 0; }
+          if (person.bubbleUntil && now > person.bubbleUntil) { person.label.visible = false; person.bubbleUntil = 0; }
           if (now - person.last > ttl) leave(person);
         }
         while (pendingJoins.size && people.size < maxPeople && seats.some(seat => !seat.occupied)) {
@@ -247,14 +289,31 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
             if (person) { person.state = 'bowing'; person.phaseUntil = now + 950; setPose(person, 'bowing'); }
           }
         }
-        if (!activeGift && giftQueue.length) activeGift = { key: giftQueue.shift()!, until: now + 3500 };
+        if (!activeGift && giftQueue.length) activeGift = { key: giftQueue.shift()!, until: now + 5000 };
         if (activeGift && now > activeGift.until) activeGift = null;
         const focus = activeGift ? people.get(activeGift.key) : undefined;
-        const targetX = focus?.x ?? 450, targetY = focus?.y ?? 800, scale = focus ? 1.6 : 1;
+        if ((focus?.key ?? '') !== focusedKey) {
+          focusedKey = focus?.key ?? '';
+          for (const person of people.values()) person.body.filters = focusedKey && person.key !== focusedKey && blurFilter ? [blurFilter] : [];
+        }
+        const targetX = focus?.x ?? 450, targetY = focus ? focus.y - 130 : 800, scale = focus ? 2.35 : 1;
         camera.pivot.x += (targetX - camera.pivot.x) * .06;
         camera.pivot.y += (targetY - camera.pivot.y) * .06;
         camera.scale.x += (scale - camera.scale.x) * .06;
         camera.scale.y = camera.scale.x;
+        for (const person of people.values()) {
+          person.body.alpha += ((focusedKey && person.key !== focusedKey ? .42 : 1) - person.body.alpha) * .12;
+          const badge = badgeRefs.current.get(person.key);
+          if (!badge) continue;
+          const badgeY = person.y - person.sprite.height - 18;
+          const x = camera.position.x + (person.x - camera.pivot.x) * camera.scale.x;
+          const y = camera.position.y + (badgeY - camera.pivot.y) * camera.scale.y;
+          badge.style.left = `${x / WIDTH * 100}%`;
+          badge.style.top = `${y / HEIGHT * 100}%`;
+          badge.style.transform = `translate(-50%, -100%) scale(${Math.min(2.35, camera.scale.x)})`;
+          badge.style.opacity = person.state === 'leaving' ? '0' : focusedKey && person.key !== focusedKey ? '.42' : '1';
+          badge.style.filter = focusedKey && person.key !== focusedKey ? 'blur(2px)' : '';
+        }
       });
 
       const token = new URLSearchParams(location.search).get('token') ?? '';
@@ -277,10 +336,9 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       setMusicVolume(musicBase);
       setMusicUrl(snapshot.audio?.musicUrl ?? '');
       setLeaders(snapshot.leaderboard ?? []);
-      for (const event of snapshot.events ?? []) onEvent(event);
       for (const viewer of snapshot.activeViewers ?? []) {
         if (people.has(viewer.userKey)) continue;
-        const person = spawn({ eventId: 'restore:' + viewer.userKey, eventType: 'viewer.join', source: 'tiktok', user: { id: viewer.userKey, nickname: viewer.nickname ?? 'Phật tử' }, payload: {} });
+        const person = spawn({ eventId: 'restore:' + viewer.userKey, eventType: 'viewer.join', source: 'tiktok', user: { id: viewer.userKey, nickname: viewer.nickname ?? 'Phật tử', avatarUrl: viewer.avatarUrl ?? undefined }, payload: {} });
         if (person) person.last = new Date(viewer.lastSeenAt).getTime();
       }
       if (snapshot.roomStats) onEvent(snapshot.roomStats);
@@ -306,18 +364,23 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       disposed = true; socket?.disconnect(); app?.destroy(true);
       currentAudio?.pause(); window.speechSynthesis?.cancel();
       if (duckTimer) clearInterval(duckTimer);
+      retryVoiceRef.current = null;
       void audioContext?.close();
     };
   }, [id]);
 
   return <main style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#18120d' }}>
     <div ref={holder} style={{ width: '100%', height: '100%' }} />
+    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
+      {badges.map(badge => <BuddhistUserBadge key={badge.key} username={badge.name} avatarUrl={badge.avatarUrl} elementRef={node => { if (node) badgeRefs.current.set(badge.key, node); else badgeRefs.current.delete(badge.key); }} />)}
+    </div>
     <div style={{ position: 'absolute', top: 20, left: 20, padding: 10, background: '#1b140dcc', borderRadius: 10, color: '#fff' }}>{status}</div>
     <div style={{ position: 'absolute', top: 20, right: 20, padding: 16, background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', minWidth: 210 }}>
-      <strong>Bảng Tri Ân Phật Tử</strong>
-      {leaders.map((leader, index) => <p key={index}>{index + 1}. {leader.nickname ?? 'Ẩn danh'} · {leader.gifts} quà</p>)}
+      <strong>Bảng Công Đức</strong>
+      {leaders.map((leader, index) => <p key={index}>{index + 1}. {leader.nickname ?? 'Ẩn danh'} · +{leader.gifts} công đức</p>)}
     </div>
     <MusicPlayer url={musicUrl} volume={musicVolume} playerRef={musicPlayer} />
     {speech && <div style={{ position: 'absolute', bottom: 50, left: '10%', right: '10%', padding: 20, background: '#241a12dd', color: '#fff', textAlign: 'center', borderRadius: 18 }}>{speech}</div>}
+    {voiceBlocked && <button style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 10 }} onClick={() => retryVoiceRef.current?.()}>Bật giọng đọc tiếng Việt</button>}
   </main>;
 }

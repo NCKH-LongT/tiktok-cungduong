@@ -23,7 +23,7 @@ const parse = <T extends z.ZodType>(schema: T, input: unknown): z.infer<T> => {
 const uuid = z.uuid();
 const loginSchema = z.object({ login: z.string().min(3), password: z.string().min(1), turnstileToken: z.string().optional() });
 const liveSchema = z.object({ uniqueId: z.string().trim().regex(/^@?[a-zA-Z0-9_.]{2,32}$/).transform(value => value.replace(/^@/, '')), title: z.string().min(1).max(100) });
-const simulationSchema = z.object({ eventType: z.enum(['viewer.join','viewer.leave','chat.comment','viewer.like','viewer.share','viewer.follow','gift.received','room.stats']), user: z.object({ id: z.string().max(100), nickname: z.string().max(100) }).optional(), payload: z.record(z.string(), z.unknown()).default({}), ai: z.boolean().default(false) });
+const simulationSchema = z.object({ eventType: z.enum(['viewer.join','viewer.leave','chat.comment','viewer.like','viewer.share','viewer.follow','gift.received','room.stats']), user: z.object({ id: z.string().max(100), nickname: z.string().max(100), avatarUrl: z.url().optional() }).optional(), payload: z.record(z.string(), z.unknown()).default({}), ai: z.boolean().default(false) });
 type AuthedRequest = Request & { principal?: { id: string; role: RoleCode; sessionId: string } };
 
 @Injectable()
@@ -70,7 +70,7 @@ class Services {
     if (userKey && event.eventType === 'viewer.leave') {
       await this.db.viewer.updateMany({ where: { liveId: event.liveId, userKey }, data: { deletedAt: new Date() } });
     } else if (userKey && event.user) {
-      await this.db.viewer.upsert({ where: { liveId_userKey: { liveId: event.liveId, userKey } }, create: { liveId: event.liveId, userKey, nickname: event.user.nickname, avatarUrl: event.user.avatarUrl }, update: { nickname: event.user.nickname, lastSeenAt: new Date(), deletedAt: null } });
+      await this.db.viewer.upsert({ where: { liveId_userKey: { liveId: event.liveId, userKey } }, create: { liveId: event.liveId, userKey, nickname: event.user.nickname, avatarUrl: event.user.avatarUrl }, update: { nickname: event.user.nickname, ...(event.user.avatarUrl ? { avatarUrl: event.user.avatarUrl } : {}), lastSeenAt: new Date(), deletedAt: null } });
     }
     if (event.eventType === 'gift.received' && event.payload.repeatEnd !== false) {
       const p = event.payload;
@@ -216,6 +216,7 @@ class LivesController {
     };
   }
   @Get(':id/ai-config') async ai(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.aIConfiguration.findUnique({ where: { liveId: id }, select: { enabled: true, personality: true, customPrompt: true, cooldownMs: true, maxPerMinute: true } }); }
+  @Get(':id/ai-history') async aiHistory(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.aIInteraction.findMany({ where: { liveId: id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, answer: true, status: true, createdAt: true } }); }
   @Put(':id/ai-config') async setAi(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ enabled: z.boolean().optional(), personality: z.string().max(100).optional(), customPrompt: z.string().max(2000).nullable().optional(), cooldownMs: z.number().int().min(1000).max(3600000).optional(), maxPerMinute: z.number().int().min(1).max(60).optional() }), body); return this.s.db.aIConfiguration.update({ where: { liveId: id }, data: d }); }
   @Get(':id/audio-config') async audio(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.audioConfiguration.findUnique({ where: { liveId: id } }); }
   @Put(':id/audio-config') async setAudio(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ musicUrl: z.url().nullable().optional(), musicVolume: z.number().int().min(0).max(100).optional(), ttsVolume: z.number().int().min(0).max(100).optional(), voiceId: z.enum(['vi-VN-Standard-A','vi-VN-Standard-D','vi-VN-Neural2-A','vi-VN-Neural2-D']).optional(), speakingRate: z.number().min(0.5).max(2).optional(), pitch: z.number().min(-10).max(10).optional(), woodenFishEnabled: z.boolean().optional(), woodenFishVolume: z.number().int().min(0).max(100).optional() }), body); if (d.musicUrl && !/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(d.musicUrl)) fail(400, 'Only HTTPS YouTube URLs supported'); return this.s.db.audioConfiguration.update({ where: { liveId: id }, data: d }); }
@@ -239,7 +240,7 @@ class OverlayController {
     const sessionIds = session?.roomId ? (await this.s.db.liveSession.findMany({ where: { liveId: id, roomId: session.roomId }, select: { id: true } })).map(item => item.id) : session ? [session.id] : [];
     const [events, viewers, roomStats, leaderboard, audio, live] = await Promise.all([
       this.s.db.liveEvent.findMany({ where: { liveId: id, type: { not: 'room.stats' }, occurredAt: { gte: cutoff } }, orderBy: { createdAt: 'desc' }, take: 50, select: { payload: true } }),
-      this.s.db.viewer.findMany({ where: { liveId: id, deletedAt: null, lastSeenAt: { gte: cutoff }, userKey: { not: '0' } }, orderBy: { lastSeenAt: 'desc' }, take: Math.min(40, scene?.maxCharacters ?? 40), select: { userKey: true, nickname: true, lastSeenAt: true } }),
+      this.s.db.viewer.findMany({ where: { liveId: id, deletedAt: null, lastSeenAt: { gte: cutoff }, userKey: { not: '0' } }, orderBy: { lastSeenAt: 'desc' }, take: Math.min(40, scene?.maxCharacters ?? 40), select: { userKey: true, nickname: true, avatarUrl: true, lastSeenAt: true } }),
       sessionIds.length ? this.s.db.liveEvent.findFirst({ where: { liveId: id, sessionId: { in: sessionIds }, type: 'room.stats' }, orderBy: { createdAt: 'desc' }, select: { payload: true } }) : null,
       this.s.leaderboard(id),
       this.s.db.audioConfiguration.findUnique({ where: { liveId: id }, select: { woodenFishEnabled: true, woodenFishVolume: true, musicVolume: true, musicUrl: true, ttsVolume: true, voiceId: true, speakingRate: true, pitch: true } }),
