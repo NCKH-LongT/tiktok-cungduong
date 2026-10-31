@@ -50,7 +50,7 @@ pipeline {
       sh '''#!/usr/bin/env bash
 mkdir -p ci-logs
 docker ps -a --filter label=com.docker.compose.project=tiktok-cungduong --format '{{.Names}} {{.Status}}' > ci-logs/docker-containers.log 2>&1 || true
-for service in api web tiktok-worker ai-worker; do
+for service in api web tiktok-worker ai-worker nginx; do
   container=$(docker ps -aq --filter label=com.docker.compose.project=tiktok-cungduong --filter "label=com.docker.compose.service=$service" | head -n 1)
   if [ -n "$container" ]; then
     docker logs --timestamps --tail 200 "$container" > "ci-logs/$service.log" 2>&1 || true

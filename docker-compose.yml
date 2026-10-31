@@ -97,8 +97,33 @@ services:
     restart: unless-stopped
   nginx:
     image: nginx:1.27-alpine
-    volumes: ["./infrastructure/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"]
-    ports: ["${HTTP_PORT:-8090}:80"]
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        cat > /etc/nginx/conf.d/default.conf <<'EOF'
+        server {
+          listen 80;
+          server_name _;
+          client_max_body_size 1m;
+          location /socket.io/ {
+            proxy_pass http://api:3001;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $$http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $$host;
+            proxy_read_timeout 65s;
+          }
+          location / {
+            proxy_pass http://web:3000;
+            proxy_set_header Host $$host;
+            proxy_set_header X-Forwarded-Proto $$scheme;
+            proxy_set_header X-Real-IP $$remote_addr;
+          }
+        }
+        EOF
+        exec nginx -g 'daemon off;'
+    ports: ["${HTTP_PORT:-8091}:80"]
     depends_on:
       web: { condition: service_started, restart: true }
     restart: unless-stopped
