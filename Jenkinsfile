@@ -6,6 +6,9 @@ pipeline {
     skipDefaultCheckout(true)
     buildDiscarder(logRotator(numToKeepStr: '20'))
   }
+  triggers {
+    githubPush()
+  }
   stages {
     stage('Checkout main') {
       steps {
