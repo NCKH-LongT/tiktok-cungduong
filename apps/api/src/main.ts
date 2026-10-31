@@ -189,8 +189,16 @@ class AuthController {
     if (attempts > 10) fail(429, 'Too many login attempts');
     if (process.env.TURNSTILE_SECRET_KEY) {
       if (!data.turnstileToken) fail(400, 'Turnstile required');
-      const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: new URLSearchParams({ secret: process.env.TURNSTILE_SECRET_KEY, response: data.turnstileToken!, remoteip: req.ip ?? '' }), signal: AbortSignal.timeout(5000) });
-      if (!(await response.json() as { success: boolean }).success) fail(403, 'Turnstile verification failed');
+      const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: new URLSearchParams({ secret: process.env.TURNSTILE_SECRET_KEY, response: data.turnstileToken! }), signal: AbortSignal.timeout(5000) });
+      if (!response.ok) fail(502, 'Không kết nối được dịch vụ Turnstile');
+      const verification = await response.json() as { success: boolean; 'error-codes'?: string[] };
+      if (!verification.success) {
+        const codes = verification['error-codes'] ?? [];
+        console.warn('Turnstile verification failed:', codes.join(',') || 'unknown');
+        if (codes.includes('invalid-input-secret') || codes.includes('missing-input-secret')) fail(503, 'Cấu hình Turnstile trên máy chủ chưa đúng');
+        if (codes.includes('timeout-or-duplicate')) fail(403, 'Mã xác minh đã hết hạn hoặc được sử dụng; vui lòng thử lại');
+        fail(403, 'Xác minh Turnstile không thành công; vui lòng thử lại');
+      }
     }
     const user = await this.s.db.user.findFirst({ where: { OR: [{ email: data.login }, { username: data.login }], active: true, deletedAt: null } });
     if (!user || !(await argon2.verify(user.passwordHash, data.password))) fail(401, 'Invalid credentials');

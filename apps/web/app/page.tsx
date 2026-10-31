@@ -12,21 +12,29 @@ async function api(path: string, init?: RequestInit) {
   return data;
 }
 
-type Turnstile = { render: (element: HTMLElement, options: Record<string, unknown>) => string; remove: (id: string) => void };
-function TurnstileWidget({ siteKey, onToken }: { siteKey: string; onToken: (token: string) => void }) {
+type Turnstile = { render: (element: HTMLElement, options: Record<string, unknown>) => string; remove: (id: string) => void; reset: (id: string) => void };
+function TurnstileWidget({ siteKey, onToken, resetSignal }: { siteKey: string; onToken: (token: string) => void; resetSignal: number }) {
   const holder = useRef<HTMLDivElement>(null);
+  const widgetId = useRef<string | null>(null);
   useEffect(() => {
     const win = window as typeof window & { turnstile?: Turnstile };
-    let widgetId: string | undefined, active = true;
-    const render = () => { if (active && holder.current && win.turnstile && !widgetId) widgetId = win.turnstile.render(holder.current, { sitekey: siteKey, callback: onToken, 'expired-callback': () => onToken('') }); };
+    let active = true;
+    const reset = () => { onToken(''); if (widgetId.current) win.turnstile?.reset(widgetId.current); };
+    const render = () => { if (active && holder.current && win.turnstile && !widgetId.current) widgetId.current = win.turnstile.render(holder.current, { sitekey: siteKey, callback: onToken, 'expired-callback': reset, 'timeout-callback': reset, 'error-callback': () => onToken('') }); };
     const script = document.createElement('script');
     script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
     script.async = true;
     script.onload = render;
     document.head.appendChild(script);
     render();
-    return () => { active = false; if (widgetId) win.turnstile?.remove(widgetId); script.remove(); };
+    return () => { active = false; if (widgetId.current) win.turnstile?.remove(widgetId.current); widgetId.current = null; script.remove(); };
   }, [siteKey, onToken]);
+  useEffect(() => {
+    if (resetSignal > 0 && widgetId.current) {
+      onToken('');
+      (window as typeof window & { turnstile?: Turnstile }).turnstile?.reset(widgetId.current);
+    }
+  }, [resetSignal, onToken]);
   return <div ref={holder} aria-label="Cloudflare Turnstile" />;
 }
 
@@ -37,6 +45,9 @@ export default function Home() {
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [captcha, setCaptcha] = useState('');
+  const [turnstileResetSignal, setTurnstileResetSignal] = useState(0);
+  const [signingIn, setSigningIn] = useState(false);
+  const signingInRef = useRef(false);
   const [siteKey, setSiteKey] = useState('');
   const [title, setTitle] = useState('');
   const [uniqueId, setUniqueId] = useState('');
@@ -71,11 +82,14 @@ export default function Home() {
   }, []);
 
   async function signIn(event: React.FormEvent) {
-    event.preventDefault(); setError('');
+    event.preventDefault();
+    if (signingInRef.current) return;
+    signingInRef.current = true; setSigningIn(true); setError('');
     try {
       await api('/auth/login', { method: 'POST', body: JSON.stringify({ login, password, turnstileToken: captcha }) });
       setPassword(''); await reload();
-    } catch (cause) { setError(String(cause)); }
+    } catch (cause) { setError(String(cause)); setCaptcha(''); setTurnstileResetSignal(value => value + 1); }
+    finally { signingInRef.current = false; setSigningIn(false); }
   }
   async function add(event: React.FormEvent) {
     event.preventDefault(); setError('');
@@ -106,8 +120,8 @@ export default function Home() {
       <form className="stack" onSubmit={signIn}>
         <label>Email hoặc tên đăng nhập<input value={login} onChange={event => setLogin(event.target.value)} required /></label>
         <label>Mật khẩu<input type="password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
-        {siteKey && <TurnstileWidget siteKey={siteKey} onToken={setCaptcha} />}
-        <button disabled={Boolean(siteKey && !captcha)}>Đăng nhập</button>
+        {siteKey && <TurnstileWidget siteKey={siteKey} onToken={setCaptcha} resetSignal={turnstileResetSignal} />}
+        <button disabled={signingIn || Boolean(siteKey && !captcha)}>{signingIn ? 'Đang đăng nhập…' : 'Đăng nhập'}</button>
       </form>
     </section> : <>
       <div className="row"><span className="pill">{user.role}</span><span>{user.email}</span>{['ADMIN', 'SUPER_ADMIN'].includes(user.role) && <a href="/admin">Quản trị →</a>}</div>
