@@ -13,6 +13,7 @@ import { z } from 'zod';
 import type { Webhook, WebhookData } from '@payos/node';
 import { giftDedupKey, hasLiveAccess, liveEventSchema, shouldAnswerComment, type LiveEvent } from '@cd/shared';
 import { DAY_PASS_VND, newOrderCode, payOSClient, settlePaidOrder } from './billing.js';
+import { revenueWindow } from './revenue.js';
 import type { Request, Response } from 'express';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -294,6 +295,46 @@ class UsersController {
   @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.admin(req); parse(uuid, id); const target = await this.s.db.user.findUnique({ where: { id } }); if (!target || target.role === 'SUPER_ADMIN') fail(403, 'Forbidden'); const now = new Date(); await this.s.db.$transaction([this.s.db.overlayToken.updateMany({ where: { live: { ownerId: id } }, data: { revokedAt: now } }), this.s.db.liveChannel.updateMany({ where: { ownerId: id }, data: { deletedAt: now, status: 'stopped' } }), this.s.db.user.update({ where: { id }, data: { active: false, deletedAt: now } }), this.s.db.authSession.updateMany({ where: { userId: id }, data: { revokedAt: now } }), this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.delete', targetId: id } })]); return { ok: true }; }
 }
 
+@Controller('admin') @UseGuards(SessionGuard)
+class AdminController {
+  constructor(private readonly s: Services) {}
+
+  @Get('revenue') async revenue(@Req() req: AuthedRequest, @Query('from') from?: string, @Query('to') to?: string) {
+    if (req.principal!.role !== 'ADMIN' && req.principal!.role !== 'SUPER_ADMIN') fail(403, 'Forbidden');
+    let range: ReturnType<typeof revenueWindow>;
+    try { range = revenueWindow(from, to); } catch { return fail(400, 'Invalid revenue date range'); }
+    const startUtc = range.start.toISOString().replace('T', ' ').replace('Z', '');
+    const endUtc = range.end.toISOString().replace('T', ' ').replace('Z', '');
+
+    type DayRow = { day: string; orders: bigint; amount: bigint };
+    type UserRow = { userId: string; email: string; username: string; orders: bigint; amount: bigint };
+    const [days, users] = await Promise.all([
+      this.s.db.$queryRaw<DayRow[]>(Prisma.sql`
+        SELECT to_char(("paidAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD') AS day,
+               COUNT(*)::bigint AS orders, SUM(amount)::bigint AS amount
+        FROM "PaymentOrder"
+        WHERE status = 'PAID' AND "paidAt" >= ${startUtc}::timestamp AND "paidAt" < ${endUtc}::timestamp
+        GROUP BY 1 ORDER BY day DESC
+      `),
+      this.s.db.$queryRaw<UserRow[]>(Prisma.sql`
+        SELECT p."userId", u.email, u.username,
+               COUNT(*)::bigint AS orders, SUM(p.amount)::bigint AS amount
+        FROM "PaymentOrder" p JOIN "User" u ON u.id = p."userId"
+        WHERE p.status = 'PAID' AND p."paidAt" >= ${startUtc}::timestamp AND p."paidAt" < ${endUtc}::timestamp
+        GROUP BY p."userId", u.email, u.username ORDER BY amount DESC, u.email ASC
+      `),
+    ]);
+    const byDay = days.map(row => ({ day: row.day, orders: Number(row.orders), amountVnd: Number(row.amount) }));
+    const byUser = users.map(row => ({ userId: row.userId, email: row.email, username: row.username, orders: Number(row.orders), amountVnd: Number(row.amount) }));
+    return {
+      from: range.from, to: range.to, timeZone: 'Asia/Ho_Chi_Minh',
+      totalVnd: byDay.reduce((sum, row) => sum + row.amountVnd, 0),
+      paidOrders: byDay.reduce((sum, row) => sum + row.orders, 0),
+      payingUsers: byUser.length, byDay, byUser,
+    };
+  }
+}
+
 @Controller('lives') @UseGuards(SessionGuard, PaidGuard)
 class LivesController {
   constructor(private readonly s: Services) {}
@@ -410,7 +451,7 @@ class OverlayController {
   }
 }
 
-@Module({ controllers: [HealthController, AuthController, BillingController, UsersController, LivesController, OverlayController], providers: [Services, SessionGuard, PaidGuard] })
+@Module({ controllers: [HealthController, AuthController, BillingController, UsersController, AdminController, LivesController, OverlayController], providers: [Services, SessionGuard, PaidGuard] })
 class AppModule {}
 
 async function main() {
