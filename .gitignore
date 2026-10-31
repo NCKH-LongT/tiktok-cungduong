@@ -10,6 +10,7 @@ coverage/
 .docker-build-cache.tar
 .docker-cache-work.*/
 ci-logs/
+.ci-tools/
 secrets/
 gcp-tts-sa.json
 !.gitkeep

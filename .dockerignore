@@ -10,3 +10,4 @@ gcp-tts-sa.json
 .docker-build-cache.tar
 .docker-cache-work.*/
 ci-logs/
+.ci-tools/

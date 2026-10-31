@@ -14,19 +14,22 @@ pipeline {
       }
     }
     stage('Install') {
-      steps { sh 'bash scripts/ci-log.sh install npm ci --no-audit --no-fund' }
+      steps { sh 'bash scripts/ci-log.sh install bash scripts/ci-node.sh npm ci --no-audit --no-fund' }
     }
     stage('Generate') {
-      steps { sh 'bash scripts/ci-log.sh generate npm run db:generate' }
+      steps { sh 'bash scripts/ci-log.sh generate bash scripts/ci-node.sh npm run db:generate' }
     }
     stage('Test') {
-      steps { sh 'bash scripts/ci-log.sh test npm test' }
+      steps { sh 'bash scripts/ci-log.sh test bash scripts/ci-node.sh npm test' }
     }
     stage('Typecheck') {
-      steps { sh 'bash scripts/ci-log.sh typecheck npm run typecheck' }
+      steps { sh 'bash scripts/ci-log.sh typecheck bash scripts/ci-node.sh npm run typecheck' }
     }
     stage('Build') {
-      steps { sh 'bash scripts/ci-log.sh build npm run build' }
+      steps { sh 'bash scripts/ci-log.sh build bash scripts/ci-node.sh npm run build' }
+    }
+    stage('Docker prerequisites') {
+      steps { sh 'bash scripts/ci-log.sh docker-check bash scripts/ci-docker-check.sh' }
     }
     stage('Docker build') {
       steps { sh 'bash scripts/ci-log.sh docker-build bash scripts/ci-docker-build.sh' }
