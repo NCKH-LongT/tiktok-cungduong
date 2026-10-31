@@ -43,6 +43,7 @@ try {
     };
   }) });
   await db.giftEvent.create({ data: { liveId: live.id, dedupKey: randomUUID(), viewerKey: 'viewer-1', nickname: 'viewer-1', giftName: 'Hoa hồng', quantity: 3, source: 'tiktok', occurredAt: new Date() } });
+  await db.viewer.create({ data: { liveId: live.id, userKey: 'viewer-1', nickname: 'viewer-1', avatarUrl: 'https://example.invalid/avatar.png' } });
   const stats = await request('/lives/' + live.id + '/analytics');
   assert.equal(stats.currentViewers, 0);
   assert.equal(stats.totalViewers, 12);
@@ -52,6 +53,8 @@ try {
   assert.equal(stats.hearts, 7);
   assert.equal(stats.shares, 1);
   assert.equal(stats.gifts, 3);
+  assert.equal(stats.leaderboard[0].gifts, 3);
+  assert.equal(stats.leaderboard[0].avatarUrl, 'https://example.invalid/avatar.png');
   assert.equal(stats.recentComments[0].text, 'Xin chào');
   assert.equal(stats.topGifts[0].giftName, 'Hoa hồng');
   const reconnected = await db.liveSession.create({ data: { liveId: live.id, roomId } });

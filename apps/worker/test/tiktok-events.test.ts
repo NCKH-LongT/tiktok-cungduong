@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeTikTokUser, normalizeTikTokComment, asNumber } from '../src/tiktok-events';
+import { normalizeTikTokUser, normalizeTikTokComment, normalizeTikTokGift, asNumber } from '../src/tiktok-events';
 
 test('member events use the nested TikTok user id when the top-level id is zero', () => {
   const first = normalizeTikTokUser({ userId: '0', user: { id: '7234567890123456789', displayId: 'viewer_one', nickname: 'Một' } });
@@ -27,4 +27,13 @@ test('avatar uses the TikTok user image and rejects unsafe URLs', () => {
   const user = normalizeTikTokUser({ user: { id: '123', avatarLarge: { urlList: ['https://example.invalid/avatar.png'] } } });
   assert.equal(user?.avatarUrl, 'https://example.invalid/avatar.png');
   assert.equal(normalizeTikTokUser({ user: { id: '456', avatarThumb: { urlList: ['javascript:alert(1)'] } } })?.avatarUrl, undefined);
+});
+
+test('ordinary gifts complete immediately; streak gifts wait for repeatEnd', () => {
+  const ordinary = normalizeTikTokGift({ giftDetails: { giftType: 0, giftName: 'Hoa hồng', diamondCount: 1 }, repeatCount: 1, repeatEnd: false });
+  assert.equal(ordinary.repeatEnd, true);
+  assert.equal(ordinary.giftName, 'Hoa hồng');
+  assert.equal(ordinary.estimatedCoins, 1);
+  assert.equal(normalizeTikTokGift({ giftDetails: { giftType: 1 }, repeatEnd: false }).repeatEnd, false);
+  assert.equal(normalizeTikTokGift({ giftDetails: { giftType: 1 }, repeatEnd: true }).repeatEnd, true);
 });

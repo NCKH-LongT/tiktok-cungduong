@@ -39,3 +39,18 @@ export function normalizeTikTokUser(raw: Record<string, unknown>) {
 export function normalizeTikTokComment(raw: Record<string, unknown>): string {
   return asString(raw.content) ?? asString(raw.comment) ?? '';
 }
+
+export function normalizeTikTokGift(raw: Record<string, unknown>) {
+  const details = asRecord(raw.giftDetails);
+  const legacy = asRecord(raw.gift);
+  const giftType = asNumber(details.giftType) ?? asNumber(legacy.giftType) ?? asNumber(raw.giftType);
+  return {
+    giftId: String(raw.giftId ?? ''),
+    giftName: asString(details.giftName) ?? asString(legacy.name) ?? asString(raw.giftName) ?? 'Gift',
+    quantity: asNumber(raw.repeatCount) ?? 1,
+    comboId: asString(raw.groupId) ?? asString(raw.comboId),
+    repeatCount: asNumber(raw.repeatCount),
+    repeatEnd: giftType !== 1 || raw.repeatEnd === 1 || raw.repeatEnd === true,
+    estimatedCoins: asNumber(details.diamondCount) ?? asNumber(legacy.diamondCount) ?? asNumber(raw.diamondCount),
+  };
+}

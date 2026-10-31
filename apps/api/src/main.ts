@@ -72,12 +72,15 @@ class Services {
     } else if (userKey && event.user) {
       await this.db.viewer.upsert({ where: { liveId_userKey: { liveId: event.liveId, userKey } }, create: { liveId: event.liveId, userKey, nickname: event.user.nickname, avatarUrl: event.user.avatarUrl }, update: { nickname: event.user.nickname, ...(event.user.avatarUrl ? { avatarUrl: event.user.avatarUrl } : {}), lastSeenAt: new Date(), deletedAt: null } });
     }
+    let newGift = true;
     if (event.eventType === 'gift.received' && event.payload.repeatEnd !== false) {
       const p = event.payload;
-      await this.db.giftEvent.createMany({ data: [{ liveId: event.liveId, dedupKey: giftDedupKey(event), viewerKey: userKey ?? 'unknown', nickname: event.user?.nickname, giftId: typeof p.giftId === 'string' ? p.giftId : null, giftName: typeof p.giftName === 'string' ? p.giftName : 'Gift', quantity: Math.max(1, Math.min(10000, Number(p.quantity) || 1)), estimatedCoins: typeof p.estimatedCoins === 'number' ? p.estimatedCoins : null, source: event.source, occurredAt: new Date(event.timestamp) }], skipDuplicates: true });
+      const giftCreated = await this.db.giftEvent.createMany({ data: [{ liveId: event.liveId, dedupKey: giftDedupKey(event), viewerKey: userKey ?? 'unknown', nickname: event.user?.nickname, giftId: typeof p.giftId === 'string' ? p.giftId : null, giftName: typeof p.giftName === 'string' ? p.giftName : 'Gift', quantity: Math.max(1, Math.min(10000, Number(p.quantity) || 1)), estimatedCoins: typeof p.estimatedCoins === 'number' ? Math.max(0, Math.floor(p.estimatedCoins)) * Math.max(1, Math.min(10000, Number(p.quantity) || 1)) : null, source: event.source, occurredAt: new Date(event.timestamp) }], skipDuplicates: true });
+      newGift = giftCreated.count > 0;
     }
+    if (!newGift) return true;
     this.io?.to(`live:${event.liveId}`).emit('live.event', event);
-    if (event.source === 'tiktok' || includeSimulatorAI) await this.enqueueAI(event);
+    if (newGift && (event.source === 'tiktok' || includeSimulatorAI)) await this.enqueueAI(event);
     return true;
   }
   async enqueueAI(event: LiveEvent) {
@@ -86,25 +89,38 @@ class Services {
     if (!config?.enabled) return;
     if (event.eventType === 'chat.comment' && !shouldAnswerComment(event.payload.text)) return;
     if (event.eventType === 'gift.received' && event.payload.repeatEnd === false) return;
-    const minuteKey = `ai:minute:${event.liveId}:${Math.floor(Date.now() / 60000)}`;
+    const isJoin = event.eventType === 'viewer.join';
+    const userKey = event.user?.id ?? event.user?.uniqueId ?? 'anon';
+    const cooldownKey = `ai:cooldown:${event.liveId}:${event.eventType}:${userKey}`;
+    if (!(await this.redis.set(cooldownKey, '1', 'PX', config.cooldownMs, 'NX'))) return;
+    const firstComment = event.eventType === 'chat.comment' && !(await this.redis.exists(`ai:comment:answered:${event.liveId}:${userKey}`));
+    const category = isJoin ? 'welcome' : event.eventType === 'gift.received' ? 'gift' : firstComment ? 'first-comment' : 'repeat-comment';
+    const minuteKey = `ai:minute:${category}:${event.liveId}:${Math.floor(Date.now() / 60000)}`;
     const minuteCount = await this.redis.incr(minuteKey);
     if (minuteCount === 1) await this.redis.expire(minuteKey, 120);
-    if (minuteCount > config.maxPerMinute) return;
+    if (minuteCount > (isJoin || category === 'repeat-comment' ? Math.max(1, Math.floor(config.maxPerMinute / 4)) : config.maxPerMinute)) return;
     const live = await this.db.liveChannel.findUnique({ where: { id: event.liveId }, select: { ownerId: true } });
     if (!live) return;
     const quota = await this.db.userQuota.findUnique({ where: { userId: live.ownerId } });
     const dayKey = `ai:day:${live.ownerId}:${new Date().toISOString().slice(0, 10)}`;
+    if (isJoin || category === 'repeat-comment') {
+      const categoryDayKey = `${dayKey}:${category}`;
+      const categoryDayCount = await this.redis.incr(categoryDayKey);
+      if (categoryDayCount === 1) await this.redis.expire(categoryDayKey, 172800);
+      if (categoryDayCount > Math.max(1, Math.floor((quota?.maxAiPerDay ?? 100) / 5))) return;
+    }
     const dayCount = await this.redis.incr(dayKey);
     if (dayCount === 1) await this.redis.expire(dayKey, 172800);
     if (dayCount > (quota?.maxAiPerDay ?? 100)) return;
-    const key = `ai:cooldown:${event.liveId}:${event.eventType}:${event.user?.id ?? event.user?.uniqueId ?? 'anon'}`;
-    if (!(await this.redis.set(key, '1', 'PX', config.cooldownMs, 'NX'))) return;
-    const priority = event.eventType === 'gift.received' ? 2 : event.eventType === 'chat.comment' ? 3 : 5;
-    await this.speechQueue.add('generate', { event }, { jobId: hash(event.eventId), priority, removeOnComplete: 100, removeOnFail: 100, attempts: 2, backoff: { type: 'exponential', delay: 1000 } });
+    const priority = event.eventType === 'gift.received' ? 1 : firstComment ? 2 : isJoin ? 5 : 3;
+    await this.speechQueue.add('generate', { event }, { jobId: hash(event.eventId), priority, delay: isJoin ? 4000 : 0, removeOnComplete: 100, removeOnFail: 100, attempts: 2, backoff: { type: 'exponential', delay: 1000 } });
+    if (firstComment) await this.redis.set(`ai:comment:answered:${event.liveId}:${userKey}`, '1', 'EX', 86400);
   }
   async leaderboard(id: string, includeSimulator = false) {
-    const rows = await this.db.giftEvent.groupBy({ by: ['viewerKey', 'nickname'], where: { liveId: id, ...(includeSimulator ? {} : { source: EventSource.tiktok }) }, _sum: { quantity: true, estimatedCoins: true }, orderBy: { _sum: { quantity: 'desc' } }, take: 5 });
-    return rows.map(r => ({ viewerKey: r.viewerKey, nickname: r.nickname, gifts: r._sum.quantity ?? 0, estimatedCoins: r._sum.estimatedCoins }));
+    const rows = await this.db.giftEvent.groupBy({ by: ['viewerKey'], where: { liveId: id, ...(includeSimulator ? {} : { source: EventSource.tiktok }) }, _sum: { quantity: true, estimatedCoins: true }, orderBy: { _sum: { quantity: 'desc' } }, take: 5 });
+    const viewers = await this.db.viewer.findMany({ where: { liveId: id, userKey: { in: rows.map(r => r.viewerKey) } }, select: { userKey: true, nickname: true, avatarUrl: true } });
+    const byKey = new Map(viewers.map(viewer => [viewer.userKey, viewer]));
+    return rows.map(r => ({ viewerKey: r.viewerKey, nickname: byKey.get(r.viewerKey)?.nickname, avatarUrl: byKey.get(r.viewerKey)?.avatarUrl, gifts: r._sum.quantity ?? 0, estimatedCoins: r._sum.estimatedCoins }));
   }
 }
 
@@ -219,9 +235,9 @@ class LivesController {
   @Get(':id/ai-history') async aiHistory(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.aIInteraction.findMany({ where: { liveId: id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, answer: true, status: true, createdAt: true } }); }
   @Put(':id/ai-config') async setAi(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ enabled: z.boolean().optional(), personality: z.string().max(100).optional(), customPrompt: z.string().max(2000).nullable().optional(), cooldownMs: z.number().int().min(1000).max(3600000).optional(), maxPerMinute: z.number().int().min(1).max(60).optional() }), body); return this.s.db.aIConfiguration.update({ where: { liveId: id }, data: d }); }
   @Get(':id/audio-config') async audio(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.audioConfiguration.findUnique({ where: { liveId: id } }); }
-  @Put(':id/audio-config') async setAudio(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ musicUrl: z.url().nullable().optional(), musicVolume: z.number().int().min(0).max(100).optional(), ttsVolume: z.number().int().min(0).max(100).optional(), voiceId: z.enum(['vi-VN-Standard-A','vi-VN-Standard-D','vi-VN-Neural2-A','vi-VN-Neural2-D']).optional(), speakingRate: z.number().min(0.5).max(2).optional(), pitch: z.number().min(-10).max(10).optional(), woodenFishEnabled: z.boolean().optional(), woodenFishVolume: z.number().int().min(0).max(100).optional() }), body); if (d.musicUrl && !/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(d.musicUrl)) fail(400, 'Only HTTPS YouTube URLs supported'); return this.s.db.audioConfiguration.update({ where: { liveId: id }, data: d }); }
+  @Put(':id/audio-config') async setAudio(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ musicUrl: z.url().nullable().optional(), musicVolume: z.number().int().min(0).max(100).optional(), ttsVolume: z.number().int().min(0).max(100).optional(), voiceId: z.enum(['vi-VN-Standard-A','vi-VN-Standard-D','vi-VN-Neural2-A','vi-VN-Neural2-D']).optional(), speakingRate: z.number().min(0.5).max(2).optional(), pitch: z.number().min(-10).max(10).optional(), woodenFishEnabled: z.boolean().optional(), woodenFishVolume: z.number().int().min(0).max(100).optional() }), body); if (d.musicUrl && !/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(d.musicUrl)) fail(400, 'Only HTTPS YouTube URLs supported'); const saved = await this.s.db.audioConfiguration.update({ where: { liveId: id }, data: d }); this.s.io?.to(`live:${id}`).emit('live.config', { audio: saved }); return saved; }
   @Get(':id/scene-config') async scene(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.sceneConfiguration.findUnique({ where: { liveId: id } }); }
-  @Put(':id/scene-config') async setScene(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ maxCharacters: z.number().int().min(1).max(100).optional(), inactiveTtlSeconds: z.number().int().min(60).max(86400).optional(), reducedMotion: z.boolean().optional() }), body); return this.s.db.sceneConfiguration.update({ where: { liveId: id }, data: d }); }
+  @Put(':id/scene-config') async setScene(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ maxCharacters: z.number().int().min(1).max(100).optional(), inactiveTtlSeconds: z.number().int().min(60).max(86400).optional(), reducedMotion: z.boolean().optional() }), body); const saved = await this.s.db.sceneConfiguration.update({ where: { liveId: id }, data: d }); this.s.io?.to(`live:${id}`).emit('live.config', { scene: saved }); return saved; }
   @Get(':id/rules') async rules(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.liveRule.findMany({ where: { liveId: id } }); }
   @Post(':id/rules') async addRule(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ triggerType: z.string().max(50), enabled: z.boolean().default(true), actions: z.array(z.object({ type: z.enum(['spawn.character','character.show.comment','camera.focus','sound.play.wooden.fish']) })).max(10), cooldownMs: z.number().int().min(0).max(3600000).default(0), priority: z.number().int().min(-100).max(100).default(0) }), body); return this.s.db.liveRule.create({ data: { ...d, liveId: id } }); }
   @Post(':id/overlay-token/rotate') async rotate(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); const token = randomBytes(32).toString('base64url'); await this.s.db.$transaction([this.s.db.overlayToken.updateMany({ where: { liveId: id, revokedAt: null }, data: { revokedAt: new Date() } }), this.s.db.overlayToken.create({ data: { liveId: id, tokenHash: hash(token) } })]); await this.s.disconnectOverlays(id); return { url: `${process.env.PUBLIC_OVERLAY_URL ?? 'http://localhost:3000'}/overlay/${id}?token=${token}` }; }
@@ -248,7 +264,8 @@ class OverlayController {
     ]);
     const latestRoomStats = roomStats?.payload as LiveEvent | undefined;
     const stoppedRoomStats = latestRoomStats && live?.status !== 'connected' ? { ...latestRoomStats, payload: { ...latestRoomStats.payload, viewerCount: 0 } } : null;
-    return { events: events.reverse().map(x => x.payload), activeViewers: viewers, roomStats: stoppedRoomStats ?? latestRoomStats ?? null, leaderboard, scene, audio };
+    const giftTotals = await this.s.db.giftEvent.groupBy({ by: ['viewerKey'], where: { liveId: id, viewerKey: { in: viewers.map(viewer => viewer.userKey) } }, _sum: { estimatedCoins: true } });
+    return { events: events.reverse().map(x => x.payload), activeViewers: viewers, roomStats: stoppedRoomStats ?? latestRoomStats ?? null, leaderboard, vipViewerKeys: giftTotals.filter(item => (item._sum.estimatedCoins ?? 0) > 100).map(item => item.viewerKey), scene, audio };
   }
 }
 

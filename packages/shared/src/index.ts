@@ -26,5 +26,5 @@ export function shouldAnswerComment(value: unknown): boolean {
   if (!text || text.length > 300) return false;
   if (/(https?:\/\/|www\.|api.?key|mật khẩu|password|system.?prompt|ignore previous|bỏ qua hướng dẫn|tiết lộ bí mật)/i.test(text)) return false;
   if (/(.)\1{12,}/u.test(text)) return false;
-  return /[?？]|^(chào|xin chào|nam mô)/i.test(text);
+  return /[\p{L}\p{N}]/u.test(text);
 }

@@ -6,8 +6,8 @@ import MusicPlayer, { type YouTubePlayer } from './music';
 import BuddhistUserBadge from './BuddhistUserBadge';
 
 type LiveEvent = { eventId: string; eventType: string; source: string; user?: { id?: string; uniqueId?: string; nickname?: string; avatarUrl?: string }; payload: Record<string, unknown> };
-type Person = { key: string; name: string; avatarUrl?: string; seat: number; body: Container; sprite: Sprite; glow: Graphics; label: Text; state: 'walking' | 'lowering' | 'bowing' | 'kneeling' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; phaseUntil: number; highlightUntil: number };
-type Badge = { key: string; name: string; avatarUrl?: string };
+type Person = { key: string; name: string; avatarUrl?: string; seat: number; body: Container; sprite: Sprite; glow: Graphics; label: Text; state: 'walking' | 'lowering' | 'bowing' | 'kneeling' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; phaseUntil: number; highlightUntil: number; badgeBrightAt: number };
+type Badge = { key: string; name: string; avatarUrl?: string; vip: boolean };
 type Speech = { text: string; audio?: string };
 const WIDTH = 900, HEIGHT = 1600;
 
@@ -19,7 +19,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   const retryVoiceRef = useRef<(() => void) | null>(null);
   const lastSpeechRef = useRef<Speech | null>(null);
   const [status, setStatus] = useState('Đang tải...');
-  const [leaders, setLeaders] = useState<{ nickname: string; gifts: number }[]>([]);
+  const [leaders, setLeaders] = useState<{ viewerKey: string; avatarUrl?: string; gifts: number }[]>([]);
   const [speech, setSpeech] = useState('');
   const [musicUrl, setMusicUrl] = useState('');
   const [musicVolume, setMusicVolume] = useState(30);
@@ -35,6 +35,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     let activeGift: { key: string; until: number } | null = null, focusedKey = '', speaking = false;
     const giftQueue: string[] = [], speechQueue: Speech[] = [];
     const people = new Map<string, Person>();
+    const vipViewerKeys = new Set<string>();
     const pendingJoins = new Map<string, LiveEvent>();
     const seatColumns = [255, 635, 110, 790, 365];
     const seats = Array.from({ length: 40 }, (_, index) => ({ x: seatColumns[index % 5], y: 1010 + Math.floor(index / 5) * 70, occupied: false }));
@@ -44,10 +45,10 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
 
     function showBadge(person: Person) {
       setBadges(current => {
-        const badge = { key: person.key, name: person.name, avatarUrl: person.avatarUrl };
+        const badge = { key: person.key, name: person.name, avatarUrl: person.avatarUrl, vip: vipViewerKeys.has(person.key) };
         const index = current.findIndex(item => item.key === person.key);
         if (index < 0) return [...current, badge];
-        if (current[index].name === badge.name && current[index].avatarUrl === badge.avatarUrl) return current;
+        if (current[index].name === badge.name && current[index].avatarUrl === badge.avatarUrl && current[index].vip === badge.vip) return current;
         return current.map(item => item.key === badge.key ? badge : item);
       });
     }
@@ -121,7 +122,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       body.x = 450; body.y = 1590; scene.addChild(body);
       const target = seats[seat];
       body.zIndex = target.y;
-      const person: Person = { key, name, avatarUrl: event.user?.avatarUrl, seat, body, sprite, glow, label, state: 'walking', x: 450, y: 1590, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, phaseUntil: 0, highlightUntil: 0 };
+      const person: Person = { key, name, avatarUrl: event.user?.avatarUrl, seat, body, sprite, glow, label, state: 'walking', x: 450, y: 1590, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, phaseUntil: 0, highlightUntil: 0, badgeBrightAt: Date.now() };
       if (focusedKey && key !== focusedKey && blurFilter) body.filters = [blurFilter];
       setPose(person, 'standing');
       people.set(key, person);
@@ -154,7 +155,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       if (event.eventType === 'gift.received' && person && event.payload.repeatEnd !== false) {
         giftQueue.push(person.key);
         person.highlightUntil = Date.now() + 3500;
-        if (person.state === 'kneeling') { person.state = 'bowing'; person.phaseUntil = Date.now() + 1000; setPose(person, 'bowing'); }
+        if (person.state === 'kneeling') { person.state = 'bowing'; person.phaseUntil = Date.now() + 1000; person.badgeBrightAt = Date.now(); setPose(person, 'bowing'); }
       }
       if (event.eventType === 'viewer.like') fish();
     }
@@ -265,7 +266,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
               setPose(person, 'standing');
             }
           } else if (person.state === 'lowering' && now > person.phaseUntil) {
-            person.state = 'bowing'; person.phaseUntil = now + 1050;
+            person.state = 'bowing'; person.phaseUntil = now + 1050; person.badgeBrightAt = now;
             setPose(person, 'bowing');
           } else if (person.state === 'bowing' && now > person.phaseUntil) {
             person.state = 'kneeling';
@@ -286,7 +287,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           if (!reducedMotion) {
             const resting = [...people.values()].filter(person => person.state === 'kneeling');
             const person = resting[Math.floor(Math.random() * resting.length)];
-            if (person) { person.state = 'bowing'; person.phaseUntil = now + 950; setPose(person, 'bowing'); }
+            if (person) { person.state = 'bowing'; person.phaseUntil = now + 950; person.badgeBrightAt = now; setPose(person, 'bowing'); }
           }
         }
         if (!activeGift && giftQueue.length) activeGift = { key: giftQueue.shift()!, until: now + 5000 };
@@ -311,7 +312,8 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           badge.style.left = `${x / WIDTH * 100}%`;
           badge.style.top = `${y / HEIGHT * 100}%`;
           badge.style.transform = `translate(-50%, -100%) scale(${Math.min(2.35, camera.scale.x)})`;
-          badge.style.opacity = person.state === 'leaving' ? '0' : focusedKey && person.key !== focusedKey ? '.42' : '1';
+          const brightness = Math.max(0, 1 - (now - person.badgeBrightAt) / 10000);
+          badge.style.opacity = person.state === 'leaving' ? '0' : String(brightness * (focusedKey && person.key !== focusedKey ? .42 : 1));
           badge.style.filter = focusedKey && person.key !== focusedKey ? 'blur(2px)' : '';
         }
       });
@@ -323,7 +325,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       if (!response.ok) { setStatus('Token không hợp lệ hoặc đã thu hồi'); return; }
       const snapshot = await response.json();
       if (disposed) return;
-      maxPeople = snapshot.scene?.maxCharacters ?? 40;
+      maxPeople = Math.min(40, snapshot.scene?.maxCharacters ?? 40);
       ttl = (snapshot.scene?.inactiveTtlSeconds ?? 900) * 1000;
       reducedMotion = Boolean(snapshot.scene?.reducedMotion);
       fishEnabled = Boolean(snapshot.audio?.woodenFishEnabled);
@@ -336,6 +338,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       setMusicVolume(musicBase);
       setMusicUrl(snapshot.audio?.musicUrl ?? '');
       setLeaders(snapshot.leaderboard ?? []);
+      for (const key of snapshot.vipViewerKeys ?? []) vipViewerKeys.add(key);
       for (const viewer of snapshot.activeViewers ?? []) {
         if (people.has(viewer.userKey)) continue;
         const person = spawn({ eventId: 'restore:' + viewer.userKey, eventType: 'viewer.join', source: 'tiktok', user: { id: viewer.userKey, nickname: viewer.nickname ?? 'Phật tử', avatarUrl: viewer.avatarUrl ?? undefined }, payload: {} });
@@ -348,9 +351,32 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       socket.on('connect_error', () => setStatus('Không thể kết nối socket'));
       socket.on('live.event', (event: LiveEvent) => {
         onEvent(event);
-        if (event.eventType === 'gift.received' && event.source === 'tiktok') {
+        if (event.eventType === 'gift.received' && event.payload.repeatEnd !== false) {
           void fetch(`/api/overlay/${id}/snapshot?token=${encodeURIComponent(token)}`)
-            .then(response => response.json()).then(data => setLeaders(data.leaderboard ?? []));
+            .then(response => response.json()).then(data => {
+              setLeaders(data.leaderboard ?? []);
+              for (const key of data.vipViewerKeys ?? []) { vipViewerKeys.add(key); const person = people.get(key); if (person) showBadge(person); }
+            });
+        }
+      });
+      socket.on('live.config', (change: { audio?: Record<string, unknown>; scene?: Record<string, unknown> }) => {
+        if (change.scene) {
+          maxPeople = Math.min(40, Number(change.scene.maxCharacters ?? maxPeople));
+          ttl = Number(change.scene.inactiveTtlSeconds ?? ttl / 1000) * 1000;
+          reducedMotion = Boolean(change.scene.reducedMotion);
+        }
+        if (change.audio) {
+          fishEnabled = Boolean(change.audio.woodenFishEnabled);
+          fishVolume = Number(change.audio.woodenFishVolume ?? fishVolume * 100) / 100;
+          ttsVolume = Number(change.audio.ttsVolume ?? ttsVolume * 100) / 100;
+          ttsRate = Number(change.audio.speakingRate ?? ttsRate);
+          ttsPitch = Number(change.audio.pitch ?? ttsPitch);
+          if (currentAudio) currentAudio.volume = ttsVolume;
+          musicBase = Number(change.audio.musicVolume ?? musicBase);
+          currentMusic = musicBase;
+          setMusicVolume(musicBase);
+          setMusicUrl(String(change.audio.musicUrl ?? ''));
+          musicPlayer.current?.setVolume(musicBase);
         }
       });
       socket.on('speech.ready', (job: Speech) => {
@@ -372,14 +398,15 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   return <main style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#18120d' }}>
     <div ref={holder} style={{ width: '100%', height: '100%' }} />
     <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
-      {badges.map(badge => <BuddhistUserBadge key={badge.key} username={badge.name} avatarUrl={badge.avatarUrl} elementRef={node => { if (node) badgeRefs.current.set(badge.key, node); else badgeRefs.current.delete(badge.key); }} />)}
+      {badges.map(badge => <BuddhistUserBadge key={badge.key} username={badge.name} avatarUrl={badge.avatarUrl} vip={badge.vip} elementRef={node => { if (node) badgeRefs.current.set(badge.key, node); else badgeRefs.current.delete(badge.key); }} />)}
     </div>
     <div style={{ position: 'absolute', top: 20, left: 20, padding: 10, background: '#1b140dcc', borderRadius: 10, color: '#fff' }}>{status}</div>
-    <div style={{ position: 'absolute', top: 20, right: 20, padding: 16, background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', minWidth: 210 }}>
+    <div style={{ position: 'absolute', top: '1.5%', left: '18%', width: '64%', height: '6.5%', padding: '1.5% 2%', display: 'grid', placeItems: 'center', boxSizing: 'border-box', background: '#3a1d0c', border: '2px solid #dcb66e', borderRadius: 18, color: '#ffe6a7', textAlign: 'center', fontSize: 'clamp(14px, 2.6vw, 32px)', fontWeight: 800, textShadow: '0 2px 4px #210b00' }}>Chánh Điện Nhất Niệm Tâm Thành</div>
+    <div style={{ position: 'absolute', top: '11%', right: '2%', width: '31%', padding: '1.2%', background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', boxSizing: 'border-box', textAlign: 'center' }}>
       <strong>Bảng Công Đức</strong>
-      {leaders.map((leader, index) => <p key={index}>{index + 1}. {leader.nickname ?? 'Ẩn danh'} · +{leader.gifts} công đức</p>)}
+      {leaders.map((leader, index) => <div key={leader.viewerKey} title={`Hạng ${index + 1}: +${leader.gifts} công đức`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 }}><span>{index + 1}.</span>{leader.avatarUrl ? <img src={leader.avatarUrl} alt="" referrerPolicy="no-referrer" style={{ width: 30, height: 30, borderRadius: '50%', objectFit: 'cover' }} /> : <span style={{ width: 30, height: 30, borderRadius: '50%', background: '#a46b29', display: 'grid', placeItems: 'center' }}>☸</span>}<span>+{leader.gifts} CĐ</span></div>)}
     </div>
-    <MusicPlayer url={musicUrl} volume={musicVolume} playerRef={musicPlayer} />
+    <MusicPlayer key={musicUrl} url={musicUrl} volume={musicVolume} playerRef={musicPlayer} />
     {speech && <div style={{ position: 'absolute', bottom: 50, left: '10%', right: '10%', padding: 20, background: '#241a12dd', color: '#fff', textAlign: 'center', borderRadius: 18 }}>{speech}</div>}
     {voiceBlocked && <button style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 10 }} onClick={() => retryVoiceRef.current?.()}>Bật giọng đọc tiếng Việt</button>}
   </main>;

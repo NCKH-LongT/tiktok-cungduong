@@ -32,11 +32,17 @@ try {
     socket.once('connect', () => { clearTimeout(timer); resolve(); });
     socket.once('connect_error', error => { clearTimeout(timer); reject(error); });
   });
+  const configUpdate = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Audio config socket timeout')), 5000);
+    socket.once('live.config', change => { clearTimeout(timer); resolve(change); });
+  });
+  await request(`/lives/${live.id}/audio-config`, 'PUT', { musicVolume: 42, ttsVolume: 65 });
+  assert.equal((await configUpdate).audio.musicVolume, 42);
   const speech = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('AI speech timeout')), 30000);
     socket.once('speech.ready', job => { clearTimeout(timer); resolve(job); });
   });
-  const simulated = await request(`/lives/${live.id}/simulate`, 'POST', { eventType: 'chat.comment', user: { id: 'ai-smoke-viewer', nickname: 'Minh' }, payload: { text: 'Thiền là gì?' }, ai: true });
+  const simulated = await request(`/lives/${live.id}/simulate`, 'POST', { eventType: 'chat.comment', user: { id: 'ai-smoke-viewer', nickname: 'Minh' }, payload: { text: 'Hôm nay lòng tôi bình an 🌸' }, ai: true });
   assert.equal(simulated.source, 'simulator');
   const result = await speech;
   assert.equal(result.sourceEventId, simulated.eventId);
@@ -46,11 +52,13 @@ try {
     const timer = setTimeout(() => reject(new Error('Gift speech timeout')), 30000);
     socket.once('speech.ready', job => { clearTimeout(timer); resolve(job); });
   });
-  const gifted = await request(`/lives/${live.id}/simulate`, 'POST', { eventType: 'gift.received', user: { id: 'ai-smoke-viewer', nickname: 'Minh' }, payload: { giftId: 'rose', giftName: 'Hoa hồng', quantity: 1 }, ai: true });
+  const gifted = await request(`/lives/${live.id}/simulate`, 'POST', { eventType: 'gift.received', user: { id: 'ai-smoke-viewer', nickname: 'Minh' }, payload: { giftId: 'rose', giftName: 'Hoa hồng', quantity: 1, estimatedCoins: 101 }, ai: true });
   const giftResult = await giftSpeech;
   assert.equal(giftResult.sourceEventId, gifted.eventId);
   assert.ok(giftResult.text.includes('Hoa hồng'));
   if (process.env.EXPECT_TTS_AUDIO === '1') assert.ok(giftResult.audio?.length > 100, 'Gift reply has no Google TTS audio');
+  const snapshot = await request(`/overlay/${live.id}/snapshot?token=${token}`);
+  assert.ok(snapshot.vipViewerKeys.includes('ai-smoke-viewer'), 'VIP badge was not activated after 101 xu');
   const history = await request(`/lives/${live.id}/ai-history`);
   assert.ok(history.some(item => item.answer === result.text));
   assert.ok(history.some(item => item.answer === giftResult.text));
