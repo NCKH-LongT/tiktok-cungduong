@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 
-export type YouTubePlayer = { setVolume: (value: number) => void; playVideo: () => void; destroy: () => void };
+export type YouTubePlayer = { setVolume: (value: number) => void; playVideo: () => void; pauseVideo: () => void; destroy: () => void };
 type YouTubeApi = { Player: new (element: HTMLElement, options: Record<string, unknown>) => YouTubePlayer };
 type WindowWithYouTube = typeof window & { YT?: YouTubeApi; onYouTubeIframeAPIReady?: () => void };
 
@@ -19,9 +19,13 @@ export function videoId(url: string): string | null {
   } catch { return null; }
 }
 
-export default function MusicPlayer({ url, volume, playerRef }: { url: string; volume: number; playerRef: MutableRefObject<YouTubePlayer | null> }) {
+export default function MusicPlayer({ url, volume, playing, playerRef }: { url: string; volume: number; playing: boolean; playerRef: MutableRefObject<YouTubePlayer | null> }) {
   const mount = useRef<HTMLDivElement>(null);
   const [blocked, setBlocked] = useState(false);
+  const playingRef = useRef(playing);
+  const volumeRef = useRef(volume);
+  playingRef.current = playing;
+  volumeRef.current = volume;
   const id = videoId(url);
 
   useEffect(() => {
@@ -34,7 +38,7 @@ export default function MusicPlayer({ url, volume, playerRef }: { url: string; v
         width: '1', height: '1', videoId: id,
         playerVars: { autoplay: 1, controls: 0, playsinline: 1, origin: window.location.origin },
         events: {
-          onReady: ({ target }: { target: YouTubePlayer }) => { target.setVolume(volume); target.playVideo(); },
+          onReady: ({ target }: { target: YouTubePlayer }) => { target.setVolume(volumeRef.current); if (playingRef.current) target.playVideo(); },
           onAutoplayBlocked: () => setBlocked(true),
         },
       });
@@ -50,6 +54,7 @@ export default function MusicPlayer({ url, volume, playerRef }: { url: string; v
   }, [id, playerRef]);
 
   useEffect(() => { playerRef.current?.setVolume(volume); }, [volume, playerRef]);
+  useEffect(() => { if (playing) playerRef.current?.playVideo(); else playerRef.current?.pauseVideo(); }, [playing, playerRef]);
   if (!id) return null;
   return <>
     <div ref={mount} aria-hidden="true" style={{ position: 'absolute', width: 1, height: 1, left: -9999, top: 0, opacity: 0, pointerEvents: 'none' }} />

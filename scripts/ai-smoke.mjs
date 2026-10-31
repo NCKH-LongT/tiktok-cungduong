@@ -42,12 +42,29 @@ try {
     const timer = setTimeout(() => reject(new Error('AI speech timeout')), 30000);
     socket.once('speech.ready', job => { clearTimeout(timer); resolve(job); });
   });
-  const simulated = await request(`/lives/${live.id}/simulate`, 'POST', { eventType: 'chat.comment', user: { id: 'ai-smoke-viewer', nickname: 'Minh' }, payload: { text: 'Hôm nay lòng tôi bình an 🌸' }, ai: true });
+  const simulated = await request(`/lives/${live.id}/simulate`, 'POST', { eventType: 'chat.comment', user: { id: 'ai-smoke-viewer', nickname: 'Minh' }, payload: { text: 'Hôm nay lòng tôi bình an 🌸. Tôi có một con mèo tên Mướp.' }, ai: true });
   assert.equal(simulated.source, 'simulator');
   const result = await speech;
   assert.equal(result.sourceEventId, simulated.eventId);
   assert.ok(result.text?.length > 0);
+  assert.ok(result.text.includes('Minh'), 'AI reply did not address the viewer by name');
+  assert.ok(!/(^|[^\p{L}])bạn(?=$|[^\p{L}])/iu.test(result.text), 'AI reply still uses bạn');
   if (process.env.EXPECT_TTS_AUDIO === '1') assert.ok(result.audio?.length > 100, 'Google TTS did not return audio');
+  const conversation = await request(`/lives/${live.id}/conversation/ai-smoke-viewer`);
+  assert.deepEqual(conversation.messages.map(message => message.role), ['viewer', 'ai']);
+  assert.equal(conversation.messages[0].text, 'Hôm nay lòng tôi bình an 🌸. Tôi có một con mèo tên Mướp.');
+  assert.equal(conversation.messages[1].text, result.text);
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  const followupSpeech = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Context reply timeout')), 30000);
+    socket.once('speech.ready', job => { clearTimeout(timer); resolve(job); });
+  });
+  const followup = await request(`/lives/${live.id}/simulate`, 'POST', { eventType: 'chat.comment', user: { id: 'ai-smoke-viewer', nickname: 'Minh' }, payload: { text: 'Con mèo tôi vừa kể tên là gì?' }, ai: true });
+  const followupResult = await followupSpeech;
+  assert.equal(followupResult.sourceEventId, followup.eventId);
+  assert.ok(followupResult.text.includes('Mướp'), 'AI did not use earlier viewer messages');
+  const updatedConversation = await request(`/lives/${live.id}/conversation/ai-smoke-viewer`);
+  assert.deepEqual(updatedConversation.messages.map(message => message.role), ['viewer', 'ai', 'viewer', 'ai']);
   const giftSpeech = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Gift speech timeout')), 30000);
     socket.once('speech.ready', job => { clearTimeout(timer); resolve(job); });
@@ -64,7 +81,7 @@ try {
   assert.ok(history.some(item => item.answer === giftResult.text));
   const analytics = await request(`/lives/${live.id}/analytics`);
   assert.equal(Object.keys(analytics.counts).length, 0);
-  console.log('AI smoke passed: Gemini comment, gift thanks and Socket.IO; LIVE analytics unchanged');
+  console.log('AI smoke passed: named Gemini reply, contextual follow-up, per-viewer conversation, gift thanks and Socket.IO; LIVE analytics unchanged');
 } finally {
   socket?.disconnect();
   await request(`/lives/${live.id}`, 'DELETE');

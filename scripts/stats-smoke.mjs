@@ -56,7 +56,10 @@ try {
   assert.equal(stats.leaderboard[0].gifts, 3);
   assert.equal(stats.leaderboard[0].avatarUrl, 'https://example.invalid/avatar.png');
   assert.equal(stats.recentComments[0].text, 'Xin chào');
+  assert.equal(stats.recentComments[0].viewerKey, 'viewer-1');
   assert.equal(stats.topGifts[0].giftName, 'Hoa hồng');
+  const conversation = await request('/lives/' + live.id + '/conversation/viewer-1');
+  assert.deepEqual(conversation.messages.map(message => [message.role, message.text]), [['viewer', 'Xin chào']]);
   const reconnected = await db.liveSession.create({ data: { liveId: live.id, roomId } });
   const timestamp = new Date();
   await db.liveEvent.createMany({ data: [

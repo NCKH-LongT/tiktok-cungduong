@@ -13,7 +13,7 @@ type Analytics = {
   hearts: number;
   shares: number;
   roomStatsAt?: string | null;
-  recentComments: { nickname: string; text: string; at: string }[];
+  recentComments: { viewerKey: string | null; nickname: string; text: string; at: string }[];
   recentGifts: { nickname: string; giftName: string; quantity: number; at: string }[];
   topGifts: { giftName: string; quantity: number }[];
 };
@@ -33,6 +33,16 @@ function Metric({ label, value, hint }: { label: string; value: number | null | 
 export default function LiveStats({ id, details = false }: { id: string; details?: boolean }) {
   const [data, setData] = useState<Analytics | null>(null);
   const [error, setError] = useState('');
+  const [conversation, setConversation] = useState<{ name: string; messages: { role: string; text: string; at: string }[] } | null>(null);
+
+  async function showConversation(viewerKey: string, name: string) {
+    try {
+      const response = await fetch(`/api/lives/${id}/conversation/${encodeURIComponent(viewerKey)}`);
+      if (!response.ok) throw new Error('Không tải được lịch sử hội thoại');
+      const data = await response.json() as { messages: { role: string; text: string; at: string }[] };
+      setConversation({ name, messages: data.messages });
+    } catch (cause) { setError(String(cause)); }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -68,10 +78,11 @@ export default function LiveStats({ id, details = false }: { id: string; details
     <h3>Bình luận mới nhất</h3>
     <div className="activity-list">
       {data.recentComments.length ? data.recentComments.slice(0, details ? 30 : 8).map((item, index) => <div className="activity" key={item.at + index}>
-        <span><strong>{item.nickname}</strong> <span className="muted">· {clock(item.at)}</span></span>
+        <span><strong>{item.nickname}</strong> <span className="muted">· {clock(item.at)}</span>{item.viewerKey && <button type="button" onClick={() => void showConversation(item.viewerKey!, item.nickname)}>Lịch sử</button>}</span>
         <span>{item.text}</span>
       </div>) : <p className="muted">{data.comments ? 'Nội dung bình luận cũ chưa được lưu; bình luận mới sẽ hiển thị tại đây.' : 'Chưa có bình luận TikTok trong phiên LIVE này.'}</p>}
     </div>
+    {conversation && <div className="card"><h3>Hội thoại với {conversation.name}</h3><button type="button" onClick={() => setConversation(null)}>Đóng</button>{conversation.messages.map((item, index) => <p key={item.at + index}><strong>{item.role === 'ai' ? 'AI' : conversation.name}</strong> · {clock(item.at)}<br />{item.text}</p>)}</div>}
     {details && <div className="analytics-columns">
       <div><h3>Quà tặng phổ biến</h3>{data.topGifts.length ? data.topGifts.map(item => <p key={item.giftName}>{item.giftName} · {number(item.quantity)}</p>) : <p className="muted">Chưa có quà tặng.</p>}</div>
       <div><h3>Quà gần đây</h3>{data.recentGifts.length ? data.recentGifts.map((item, index) => <p key={item.at + index}>{item.nickname} · {item.giftName} × {number(item.quantity)} <span className="muted">{clock(item.at)}</span></p>) : <p className="muted">Chưa có quà tặng.</p>}</div>

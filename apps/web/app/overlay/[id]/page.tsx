@@ -4,11 +4,13 @@ import { io, type Socket } from 'socket.io-client';
 import type { Application, Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
 import MusicPlayer, { type YouTubePlayer } from './music';
 import BuddhistUserBadge from './BuddhistUserBadge';
+import styles from './overlay.module.css';
 
 type LiveEvent = { eventId: string; eventType: string; source: string; user?: { id?: string; uniqueId?: string; nickname?: string; avatarUrl?: string }; payload: Record<string, unknown> };
 type Person = { key: string; name: string; avatarUrl?: string; seat: number; body: Container; sprite: Sprite; glow: Graphics; label: Text; state: 'walking' | 'lowering' | 'bowing' | 'kneeling' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; phaseUntil: number; highlightUntil: number; badgeBrightAt: number };
 type Badge = { key: string; name: string; avatarUrl?: string; vip: boolean };
-type Speech = { text: string; audio?: string };
+type Speech = { text: string; audio?: string; source?: string };
+type Prayer = { id: string; name: string; avatarUrl?: string; text: string; top: number; duration: number };
 const WIDTH = 900, HEIGHT = 1600;
 
 export default function Overlay({ params }: { params: Promise<{ id: string }> }) {
@@ -18,21 +20,25 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   const musicPlayer = useRef<YouTubePlayer | null>(null);
   const retryVoiceRef = useRef<(() => void) | null>(null);
   const lastSpeechRef = useRef<Speech | null>(null);
-  const [status, setStatus] = useState('Đang tải...');
+  const previewMutedRef = useRef(false);
+  const [previewMuted, setPreviewMuted] = useState(false);
+  const [status, setStatus] = useState('');
   const [leaders, setLeaders] = useState<{ viewerKey: string; avatarUrl?: string; gifts: number }[]>([]);
   const [speech, setSpeech] = useState('');
   const [musicUrl, setMusicUrl] = useState('');
   const [musicVolume, setMusicVolume] = useState(30);
+  const [livePlaying, setLivePlaying] = useState(false);
   const [badges, setBadges] = useState<Badge[]>([]);
   const [voiceBlocked, setVoiceBlocked] = useState(false);
+  const [prayers, setPrayers] = useState<Prayer[]>([]);
 
   useEffect(() => {
     let app: Application | undefined, socket: Socket | undefined, disposed = false;
     let scene: Container, camera: Container, audioContext: AudioContext | undefined;
     let ttl = 900000, maxPeople = 40, reducedMotion = false, fishEnabled = false, fishVolume = .3, ttsVolume = .8, ttsRate = 1, ttsPitch = 0, musicBase = 30, currentMusic = 30;
-    let nextAmbientBowAt = Date.now() + 12000;
+    let nextAmbientBowAt = Date.now() + 10000, liveActive = false;
     let duckTimer: ReturnType<typeof setInterval> | undefined, currentAudio: HTMLAudioElement | undefined;
-    let activeGift: { key: string; until: number } | null = null, focusedKey = '', speaking = false;
+    let activeGift: { key: string; until: number } | null = null, focusedKey = '', speaking = false, stopVersion = 0;
     const giftQueue: string[] = [], speechQueue: Speech[] = [];
     const people = new Map<string, Person>();
     const vipViewerKeys = new Set<string>();
@@ -42,6 +48,18 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     let Pixi: typeof import('pixi.js') | undefined;
     let poses: { standing: Texture; kneeling: Texture; bowing: Texture } | undefined;
     let blurFilter: import('pixi.js').BlurFilter | undefined;
+    const params = new URLSearchParams(location.search);
+    previewMutedRef.current = params.get('preview') === '1' && params.get('muted') !== '0';
+    setPreviewMuted(previewMutedRef.current);
+    const onPreviewAudio = (event: MessageEvent) => {
+      if (event.source !== window.parent || event.origin !== window.location.origin || event.data?.type !== 'overlay.preview-audio') return;
+      previewMutedRef.current = Boolean(event.data.muted);
+      setPreviewMuted(previewMutedRef.current);
+      if (currentAudio) currentAudio.volume = previewMutedRef.current ? 0 : ttsVolume;
+      if (previewMutedRef.current) window.speechSynthesis?.cancel();
+      musicPlayer.current?.setVolume(previewMutedRef.current ? 0 : currentMusic);
+    };
+    window.addEventListener('message', onPreviewAudio);
 
     function showBadge(person: Person) {
       setBadges(current => {
@@ -63,7 +81,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     }
 
     function fish() {
-      if (!fishEnabled) return;
+      if (!fishEnabled || previewMutedRef.current) return;
       try {
         audioContext ??= new AudioContext();
         void audioContext.resume();
@@ -82,6 +100,17 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       person.state = 'leaving';
       person.targetX = 450; person.targetY = 1590;
       setPose(person, 'standing');
+    }
+    function stopLiveScene() {
+      stopVersion++;
+      if (duckTimer) clearInterval(duckTimer);
+      currentMusic = 0;
+      pendingJoins.clear(); giftQueue.length = 0; speechQueue.length = 0;
+      activeGift = null; focusedKey = '';
+      for (const person of people.values()) { scene.removeChild(person.body); person.body.destroy({ children: true }); seats[person.seat].occupied = false; }
+      people.clear(); badgeRefs.current.clear(); setBadges([]); setPrayers([]); setSpeech('');
+      currentAudio?.pause(); window.speechSynthesis?.cancel();
+      musicPlayer.current?.setVolume(0); musicPlayer.current?.pauseVideo();
     }
     function spawn(event: LiveEvent) {
       const key = event.user?.id ?? event.user?.uniqueId;
@@ -152,6 +181,12 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
         person.label.visible = true;
         person.bubbleUntil = Date.now() + 3000;
       }
+      if (event.eventType === 'chat.comment') {
+        const message = String(event.payload.text ?? '').trim();
+        if (/^Cầu\s*:/iu.test(message)) {
+          setPrayers(current => [...current.slice(-7), { id: event.eventId, name: event.user?.nickname ?? 'Phật tử', avatarUrl: event.user?.avatarUrl, text: message, top: 18 + Math.random() * 64, duration: 10 + Math.min(15, message.length * .09) + Math.random() * 4 }]);
+        }
+      }
       if (event.eventType === 'gift.received' && person && event.payload.repeatEnd !== false) {
         giftQueue.push(person.key);
         person.highlightUntil = Date.now() + 3500;
@@ -166,18 +201,19 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       duckTimer = setInterval(() => {
         step++;
         currentMusic = Math.round(start + (target - start) * Math.min(1, step / 10));
-        musicPlayer.current?.setVolume(currentMusic);
+        musicPlayer.current?.setVolume(previewMutedRef.current ? 0 : currentMusic);
         if (step >= 10 && duckTimer) clearInterval(duckTimer);
       }, 60);
     }
     async function playVoice(job: Speech) {
+      if (previewMutedRef.current) return;
       if (job.audio) {
         const audio = new Audio('data:audio/mpeg;base64,' + job.audio);
         currentAudio = audio; audio.volume = ttsVolume;
         await new Promise<void>(resolve => {
-          const timer = setTimeout(resolve, 20000);
+          const timer = setTimeout(() => { audio.pause(); resolve(); }, 120000);
           const done = () => { clearTimeout(timer); resolve(); };
-          audio.onended = done; audio.onerror = done;
+          audio.onended = done; audio.onerror = done; audio.onpause = done;
           void audio.play().then(() => setVoiceBlocked(false)).catch(() => { setVoiceBlocked(true); done(); });
         });
         currentAudio = undefined;
@@ -187,10 +223,10 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           utterance.lang = 'vi-VN'; utterance.volume = ttsVolume; utterance.rate = ttsRate; utterance.pitch = Math.max(0, Math.min(2, 1 + ttsPitch / 10));
           const vietnameseVoice = window.speechSynthesis.getVoices().find(voice => voice.lang.toLowerCase().startsWith('vi'));
           if (vietnameseVoice) utterance.voice = vietnameseVoice;
-          let started = false;
-          const timer = setTimeout(() => { if (!started) setVoiceBlocked(true); resolve(); }, 20000);
-          const done = () => { clearTimeout(timer); resolve(); };
-          utterance.onstart = () => { started = true; setVoiceBlocked(false); };
+          const startTimer = setTimeout(() => { setVoiceBlocked(true); window.speechSynthesis.cancel(); done(); }, 10000);
+          const timer = setTimeout(() => { window.speechSynthesis.cancel(); done(); }, 120000);
+          const done = () => { clearTimeout(startTimer); clearTimeout(timer); resolve(); };
+          utterance.onstart = () => { clearTimeout(startTimer); setVoiceBlocked(false); };
           utterance.onend = done; utterance.onerror = () => { setVoiceBlocked(true); done(); };
           window.speechSynthesis.speak(utterance);
         });
@@ -206,11 +242,13 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       speaking = true;
       while (speechQueue.length && !disposed) {
         const job = speechQueue.shift()!;
+        const version = stopVersion;
         lastSpeechRef.current = job;
         setSpeech(job.text);
         duck(Math.round(musicBase * .25));
         const startedAt = Date.now();
         await playVoice(job);
+        if (version !== stopVersion) { setSpeech(''); continue; }
         await new Promise(resolve => setTimeout(resolve, Math.max(0, 6000 - (Date.now() - startedAt))));
         duck(musicBase);
         setSpeech('');
@@ -234,6 +272,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       };
       app = new Application();
       await app.init({ width: WIDTH, height: HEIGHT, background: 0x18120d, antialias: true });
+      app.ticker.maxFPS = 30;
       if (disposed) { app.destroy(true); return; }
       app.canvas.style.width = '100%'; app.canvas.style.height = '100%';
       holder.current?.appendChild(app.canvas);
@@ -283,11 +322,14 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           spawn(event);
         }
         if (now >= nextAmbientBowAt) {
-          nextAmbientBowAt = now + 8000 + Math.random() * 14000;
+          nextAmbientBowAt = now + 10000;
           if (!reducedMotion) {
             const resting = [...people.values()].filter(person => person.state === 'kneeling');
-            const person = resting[Math.floor(Math.random() * resting.length)];
-            if (person) { person.state = 'bowing'; person.phaseUntil = now + 950; person.badgeBrightAt = now; setPose(person, 'bowing'); }
+            const count = Math.min(resting.length, Math.max(2, Math.min(4, Math.ceil(resting.length / 4))));
+            for (let index = 0; index < count; index++) {
+              const person = resting.splice(Math.floor(Math.random() * resting.length), 1)[0];
+              person.state = 'bowing'; person.phaseUntil = now + 950; person.badgeBrightAt = now; setPose(person, 'bowing');
+            }
           }
         }
         if (!activeGift && giftQueue.length) activeGift = { key: giftQueue.shift()!, until: now + 5000 };
@@ -318,13 +360,15 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
         }
       });
 
-      const token = new URLSearchParams(location.search).get('token') ?? '';
+      const token = params.get('token') ?? '';
       if (!token) { setStatus('Thiếu overlay token'); return; }
       const response = await fetch(`/api/overlay/${id}/snapshot?token=${encodeURIComponent(token)}`);
       if (disposed) return;
       if (!response.ok) { setStatus('Token không hợp lệ hoặc đã thu hồi'); return; }
       const snapshot = await response.json();
       if (disposed) return;
+      liveActive = snapshot.status === 'connecting' || snapshot.status === 'connected';
+      setLivePlaying(liveActive);
       maxPeople = Math.min(40, snapshot.scene?.maxCharacters ?? 40);
       ttl = (snapshot.scene?.inactiveTtlSeconds ?? 900) * 1000;
       reducedMotion = Boolean(snapshot.scene?.reducedMotion);
@@ -346,10 +390,11 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       }
       if (snapshot.roomStats) onEvent(snapshot.roomStats);
       socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || undefined, { auth: { liveId: id, overlayToken: token } });
-      socket.on('connect', () => setStatus('Đã kết nối'));
+      socket.on('connect', () => setStatus(''));
       socket.on('disconnect', () => setStatus('Mất kết nối · đang thử lại'));
       socket.on('connect_error', () => setStatus('Không thể kết nối socket'));
       socket.on('live.event', (event: LiveEvent) => {
+        if (event.source === 'tiktok' && !liveActive) return;
         onEvent(event);
         if (event.eventType === 'gift.received' && event.payload.repeatEnd !== false) {
           void fetch(`/api/overlay/${id}/snapshot?token=${encodeURIComponent(token)}`)
@@ -358,6 +403,12 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
               for (const key of data.vipViewerKeys ?? []) { vipViewerKeys.add(key); const person = people.get(key); if (person) showBadge(person); }
             });
         }
+      });
+      socket.on('live.status', (change: { status: string }) => {
+        liveActive = change.status === 'connecting' || change.status === 'connected';
+        setLivePlaying(liveActive);
+        if (!liveActive) stopLiveScene();
+        else { currentMusic = musicBase; musicPlayer.current?.setVolume(previewMutedRef.current ? 0 : musicBase); }
       });
       socket.on('live.config', (change: { audio?: Record<string, unknown>; scene?: Record<string, unknown> }) => {
         if (change.scene) {
@@ -371,15 +422,16 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           ttsVolume = Number(change.audio.ttsVolume ?? ttsVolume * 100) / 100;
           ttsRate = Number(change.audio.speakingRate ?? ttsRate);
           ttsPitch = Number(change.audio.pitch ?? ttsPitch);
-          if (currentAudio) currentAudio.volume = ttsVolume;
+          if (currentAudio) currentAudio.volume = previewMutedRef.current ? 0 : ttsVolume;
           musicBase = Number(change.audio.musicVolume ?? musicBase);
           currentMusic = musicBase;
           setMusicVolume(musicBase);
           setMusicUrl(String(change.audio.musicUrl ?? ''));
-          musicPlayer.current?.setVolume(musicBase);
+          musicPlayer.current?.setVolume(previewMutedRef.current || !liveActive ? 0 : musicBase);
         }
       });
       socket.on('speech.ready', (job: Speech) => {
+        if (job.source === 'tiktok' && !liveActive) return;
         speechQueue.push(job);
         if (speechQueue.length > 20) speechQueue.shift();
         void playSpeech();
@@ -388,6 +440,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     void start().catch(() => setStatus('Không tải được cảnh'));
     return () => {
       disposed = true; socket?.disconnect(); app?.destroy(true);
+      window.removeEventListener('message', onPreviewAudio);
       currentAudio?.pause(); window.speechSynthesis?.cancel();
       if (duckTimer) clearInterval(duckTimer);
       retryVoiceRef.current = null;
@@ -400,13 +453,16 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
       {badges.map(badge => <BuddhistUserBadge key={badge.key} username={badge.name} avatarUrl={badge.avatarUrl} vip={badge.vip} elementRef={node => { if (node) badgeRefs.current.set(badge.key, node); else badgeRefs.current.delete(badge.key); }} />)}
     </div>
-    <div style={{ position: 'absolute', top: 20, left: 20, padding: 10, background: '#1b140dcc', borderRadius: 10, color: '#fff' }}>{status}</div>
-    <div style={{ position: 'absolute', top: '1.5%', left: '18%', width: '64%', height: '6.5%', padding: '1.5% 2%', display: 'grid', placeItems: 'center', boxSizing: 'border-box', background: '#3a1d0c', border: '2px solid #dcb66e', borderRadius: 18, color: '#ffe6a7', textAlign: 'center', fontSize: 'clamp(14px, 2.6vw, 32px)', fontWeight: 800, textShadow: '0 2px 4px #210b00' }}>Chánh Điện Nhất Niệm Tâm Thành</div>
-    <div style={{ position: 'absolute', top: '11%', right: '2%', width: '31%', padding: '1.2%', background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', boxSizing: 'border-box', textAlign: 'center' }}>
+    {prayers.map(prayer => <div key={prayer.id} className={styles.prayer} style={{ top: `${prayer.top}%`, animationDuration: `${prayer.duration}s` }} onAnimationEnd={() => setPrayers(current => current.filter(item => item.id !== prayer.id))}>
+      <span className={styles.prayerAvatar}>☸{prayer.avatarUrl && <img src={prayer.avatarUrl} alt="" referrerPolicy="no-referrer" onError={event => event.currentTarget.remove()} />}</span>
+      <strong>{prayer.name}</strong><span>{prayer.text}</span>
+    </div>)}
+    {status && <div style={{ position: 'absolute', top: 20, left: 20, padding: 10, background: '#1b140dcc', borderRadius: 10, color: '#fff' }}>{status}</div>}
+    <div style={{ position: 'absolute', top: '11%', right: '2%', width: '31%', padding: '1.2%', background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', boxSizing: 'border-box', textAlign: 'center', fontSize: '.85em' }}>
       <strong>Bảng Công Đức</strong>
       {leaders.map((leader, index) => <div key={leader.viewerKey} title={`Hạng ${index + 1}: +${leader.gifts} công đức`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 }}><span>{index + 1}.</span>{leader.avatarUrl ? <img src={leader.avatarUrl} alt="" referrerPolicy="no-referrer" style={{ width: 30, height: 30, borderRadius: '50%', objectFit: 'cover' }} /> : <span style={{ width: 30, height: 30, borderRadius: '50%', background: '#a46b29', display: 'grid', placeItems: 'center' }}>☸</span>}<span>+{leader.gifts} CĐ</span></div>)}
     </div>
-    <MusicPlayer key={musicUrl} url={musicUrl} volume={musicVolume} playerRef={musicPlayer} />
+    <MusicPlayer key={musicUrl} url={musicUrl} volume={previewMuted || !livePlaying ? 0 : musicVolume} playing={livePlaying && !previewMuted} playerRef={musicPlayer} />
     {speech && <div style={{ position: 'absolute', bottom: 50, left: '10%', right: '10%', padding: 20, background: '#241a12dd', color: '#fff', textAlign: 'center', borderRadius: 18 }}>{speech}</div>}
     {voiceBlocked && <button style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 10 }} onClick={() => retryVoiceRef.current?.()}>Bật giọng đọc tiếng Việt</button>}
   </main>;

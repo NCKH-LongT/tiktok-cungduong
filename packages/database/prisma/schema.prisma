@@ -158,6 +158,7 @@ model LiveEvent {
 
   @@index([liveId, createdAt])
   @@index([liveId, type, createdAt])
+  @@index([liveId, userKey, type, createdAt])
   @@index([liveId, sessionId, source, type, createdAt])
 }
 

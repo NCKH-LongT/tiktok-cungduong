@@ -60,10 +60,21 @@ class Services {
       if (socket.data.overlay) socket.disconnect(true);
     }
   }
+  async stopLive(id: string) {
+    await this.db.liveChannel.update({ where: { id }, data: { status: 'stopped' } });
+    await this.db.viewer.updateMany({ where: { liveId: id, deletedAt: null }, data: { deletedAt: new Date() } });
+    this.io?.to(`live:${id}`).emit('live.status', { status: 'stopped' });
+    await this.redis.publish('connector.stop', id);
+    for (let attempt = 0; attempt < 20 && await this.redis.exists(`connector:lock:${id}`); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    return { status: 'stopped', connectorClosed: !(await this.redis.exists(`connector:lock:${id}`)) };
+  }
   async publish(eventInput: unknown, includeSimulatorAI = false) {
     const event = parse(liveEventSchema, eventInput);
     const live = await this.db.liveChannel.findUnique({ where: { id: event.liveId } });
     if (!live || live.deletedAt) return false;
+    if (event.source === 'tiktok' && live.status !== 'connected') return false;
     const userKey = event.user?.id ?? event.user?.uniqueId ?? null;
     const created = await this.db.liveEvent.createMany({ data: [{ eventId: event.eventId, liveId: event.liveId, sessionId: event.sessionId ?? null, source: event.source, type: event.eventType, userKey, payload: event as object, occurredAt: new Date(event.timestamp) }], skipDuplicates: true });
     if (!created.count) return false;
@@ -183,10 +194,20 @@ class LivesController {
   @Post() async create(@Req() req: AuthedRequest, @Body() body: unknown) { this.editable(req); const d = parse(liveSchema, body); const quota = await this.s.db.userQuota.findUnique({ where: { userId: req.principal!.id } }); const count = await this.s.db.liveChannel.count({ where: { ownerId: req.principal!.id, deletedAt: null } }); if (count >= (quota?.maxLives ?? 3)) fail(403, 'LIVE quota reached'); return this.s.db.liveChannel.create({ data: { ...d, ownerId: req.principal!.id, ai: { create: {} }, audio: { create: {} }, scene: { create: {} } } }); }
   @Get(':id') async get(@Req() req: AuthedRequest, @Param('id') id: string) { return this.s.live(id, req); }
   @Patch(':id') async update(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(liveSchema.partial().extend({ autoReconnect: z.boolean().optional() }), body); return this.s.db.liveChannel.update({ where: { id }, data: d }); }
-  @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); await this.s.db.liveChannel.update({ where: { id }, data: { deletedAt: new Date(), status: 'stopped' } }); await this.s.db.overlayToken.updateMany({ where: { liveId: id }, data: { revokedAt: new Date() } }); return { ok: true }; }
-  @Post(':id/connect') async connect(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); if (process.env.TIKTOK_CONNECTOR_MODE !== 'tiktok') fail(503, 'TikTok connector disabled; use simulator'); await this.s.db.liveChannel.update({ where: { id }, data: { status: 'connecting' } }); return { status: 'connecting' }; }
-  @Post(':id/disconnect') async disconnect(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); await this.s.db.liveChannel.update({ where: { id }, data: { status: 'stopped' } }); return { status: 'stopped' }; }
-  @Get(':id/status') async status(@Req() req: AuthedRequest, @Param('id') id: string) { const live = await this.s.live(id, req); const lastEvent = await this.s.db.liveEvent.findFirst({ where: { liveId: id, source: EventSource.tiktok }, orderBy: { createdAt: 'desc' }, select: { occurredAt: true } }); return { status: live!.status, lastConnectedAt: live!.lastConnectedAt, lastEventAt: lastEvent?.occurredAt ?? null }; }
+  @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); await this.s.stopLive(id); await this.s.db.liveChannel.update({ where: { id }, data: { deletedAt: new Date() } }); await this.s.db.overlayToken.updateMany({ where: { liveId: id }, data: { revokedAt: new Date() } }); return { ok: true }; }
+  @Post(':id/connect') async connect(@Req() req: AuthedRequest, @Param('id') id: string) {
+    this.editable(req);
+    const live = (await this.s.live(id, req))!;
+    if (process.env.TIKTOK_CONNECTOR_MODE !== 'tiktok') fail(503, 'TikTok connector disabled; use simulator');
+    const controllers = await this.s.io?.in(`live:${id}`).fetchSockets() ?? [];
+    if (!controllers.some(socket => socket.data.controller)) fail(409, 'Open the LIVE dashboard before connecting TikTok');
+    if (live.status === 'connecting' || live.status === 'connected') return { status: live.status };
+    await this.s.db.liveChannel.update({ where: { id }, data: { status: 'connecting', autoReconnect: false } });
+    this.s.io?.to(`live:${id}`).emit('live.status', { status: 'connecting' });
+    return { status: 'connecting' };
+  }
+  @Post(':id/disconnect') async disconnect(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); return this.s.stopLive(id); }
+  @Get(':id/status') async status(@Req() req: AuthedRequest, @Param('id') id: string) { const live = await this.s.live(id, req); const [lastEvent, connectorLock] = await Promise.all([this.s.db.liveEvent.findFirst({ where: { liveId: id, source: EventSource.tiktok }, orderBy: { createdAt: 'desc' }, select: { occurredAt: true } }), this.s.redis.exists(`connector:lock:${id}`)]); return { status: live!.status, connectorClosed: !connectorLock, lastConnectedAt: live!.lastConnectedAt, lastEventAt: lastEvent?.occurredAt ?? null }; }
   @Get(':id/events') async events(@Req() req: AuthedRequest, @Param('id') id: string, @Query('limit') limit?: string) { await this.s.live(id, req); return this.s.db.liveEvent.findMany({ where: { liveId: id }, orderBy: { createdAt: 'desc' }, take: Math.min(100, Math.max(1, Number(limit) || 50)) }); }
   @Get(':id/analytics') async analytics(@Req() req: AuthedRequest, @Param('id') id: string) {
     const live = (await this.s.live(id, req))!;
@@ -199,7 +220,7 @@ class LivesController {
     const [grouped, latestRoomStats, commentRows, giftTotals, giftRows, topGiftRows, summary] = await Promise.all([
       this.s.db.liveEvent.groupBy({ by: ['type'], where, _count: true }),
       this.s.db.liveEvent.findFirst({ where: { ...where, type: 'room.stats' }, orderBy: { createdAt: 'desc' }, select: { payload: true, occurredAt: true } }),
-      this.s.db.liveEvent.findMany({ where: { ...where, type: 'chat.comment' }, orderBy: { createdAt: 'desc' }, take: 100, select: { payload: true, occurredAt: true } }),
+      this.s.db.liveEvent.findMany({ where: { ...where, type: 'chat.comment' }, orderBy: { createdAt: 'desc' }, take: 100, select: { userKey: true, payload: true, occurredAt: true } }),
       this.s.db.giftEvent.aggregate({ where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: startedAt } }, _count: true, _sum: { quantity: true } }),
       this.s.db.giftEvent.findMany({ where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: startedAt } }, orderBy: { occurredAt: 'desc' }, take: 20, select: { nickname: true, giftName: true, quantity: true, occurredAt: true } }),
       this.s.db.giftEvent.groupBy({ by: ['giftName'], where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: startedAt } }, _sum: { quantity: true }, orderBy: { _sum: { quantity: 'desc' } }, take: 5 }),
@@ -225,7 +246,7 @@ class LivesController {
       comments: counts['chat.comment'] ?? 0,
       giftEvents: giftTotals._count,
       gifts: giftTotals._sum.quantity ?? 0,
-      recentComments: commentRows.map(row => { const event = row.payload as { user?: { nickname?: string }; payload?: { text?: string } }; return { nickname: event.user?.nickname ?? 'Người xem', text: event.payload?.text ?? '', at: row.occurredAt }; }).filter(item => item.text.trim()).slice(0, 30),
+      recentComments: commentRows.map(row => { const event = row.payload as { user?: { nickname?: string }; payload?: { text?: string } }; return { viewerKey: row.userKey, nickname: event.user?.nickname ?? 'Người xem', text: event.payload?.text ?? '', at: row.occurredAt }; }).filter(item => item.text.trim()).slice(0, 30),
       recentGifts: giftRows.map(row => ({ nickname: row.nickname ?? 'Người xem', giftName: row.giftName, quantity: row.quantity, at: row.occurredAt })),
       topGifts: topGiftRows.map(row => ({ giftName: row.giftName, quantity: row._sum.quantity ?? 0 })),
       leaderboard: await this.s.leaderboard(id),
@@ -233,6 +254,18 @@ class LivesController {
   }
   @Get(':id/ai-config') async ai(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.aIConfiguration.findUnique({ where: { liveId: id }, select: { enabled: true, personality: true, customPrompt: true, cooldownMs: true, maxPerMinute: true } }); }
   @Get(':id/ai-history') async aiHistory(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.aIInteraction.findMany({ where: { liveId: id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, answer: true, status: true, createdAt: true } }); }
+  @Get(':id/conversation/:viewerKey') async conversation(@Req() req: AuthedRequest, @Param('id') id: string, @Param('viewerKey') viewerKey: string) {
+    await this.s.live(id, req);
+    if (!viewerKey || viewerKey.length > 200) fail(400, 'Invalid viewer key');
+    const comments = await this.s.db.liveEvent.findMany({ where: { liveId: id, userKey: viewerKey, type: 'chat.comment' }, orderBy: { createdAt: 'desc' }, take: 50, select: { eventId: true, payload: true, occurredAt: true } });
+    const replies = await this.s.db.aIInteraction.findMany({ where: { liveId: id, sourceEventId: { in: comments.map(comment => comment.eventId) } }, select: { sourceEventId: true, answer: true, createdAt: true } });
+    const byEvent = new Map(replies.map(reply => [reply.sourceEventId, reply]));
+    return { viewerKey, messages: comments.reverse().flatMap(comment => {
+      const event = comment.payload as { payload?: { text?: string } };
+      const reply = byEvent.get(comment.eventId);
+      return [{ role: 'viewer', text: event.payload?.text ?? '', at: comment.occurredAt }, ...(reply?.answer ? [{ role: 'ai', text: reply.answer, at: reply.createdAt }] : [])];
+    }) };
+  }
   @Put(':id/ai-config') async setAi(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ enabled: z.boolean().optional(), personality: z.string().max(100).optional(), customPrompt: z.string().max(2000).nullable().optional(), cooldownMs: z.number().int().min(1000).max(3600000).optional(), maxPerMinute: z.number().int().min(1).max(60).optional() }), body); return this.s.db.aIConfiguration.update({ where: { liveId: id }, data: d }); }
   @Get(':id/audio-config') async audio(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.audioConfiguration.findUnique({ where: { liveId: id } }); }
   @Put(':id/audio-config') async setAudio(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ musicUrl: z.url().nullable().optional(), musicVolume: z.number().int().min(0).max(100).optional(), ttsVolume: z.number().int().min(0).max(100).optional(), voiceId: z.enum(['vi-VN-Standard-A','vi-VN-Standard-D','vi-VN-Neural2-A','vi-VN-Neural2-D']).optional(), speakingRate: z.number().min(0.5).max(2).optional(), pitch: z.number().min(-10).max(10).optional(), woodenFishEnabled: z.boolean().optional(), woodenFishVolume: z.number().int().min(0).max(100).optional() }), body); if (d.musicUrl && !/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(d.musicUrl)) fail(400, 'Only HTTPS YouTube URLs supported'); const saved = await this.s.db.audioConfiguration.update({ where: { liveId: id }, data: d }); this.s.io?.to(`live:${id}`).emit('live.config', { audio: saved }); return saved; }
@@ -265,7 +298,7 @@ class OverlayController {
     const latestRoomStats = roomStats?.payload as LiveEvent | undefined;
     const stoppedRoomStats = latestRoomStats && live?.status !== 'connected' ? { ...latestRoomStats, payload: { ...latestRoomStats.payload, viewerCount: 0 } } : null;
     const giftTotals = await this.s.db.giftEvent.groupBy({ by: ['viewerKey'], where: { liveId: id, viewerKey: { in: viewers.map(viewer => viewer.userKey) } }, _sum: { estimatedCoins: true } });
-    return { events: events.reverse().map(x => x.payload), activeViewers: viewers, roomStats: stoppedRoomStats ?? latestRoomStats ?? null, leaderboard, vipViewerKeys: giftTotals.filter(item => (item._sum.estimatedCoins ?? 0) > 100).map(item => item.viewerKey), scene, audio };
+    return { events: events.reverse().map(x => x.payload), activeViewers: viewers, roomStats: stoppedRoomStats ?? latestRoomStats ?? null, leaderboard, vipViewerKeys: giftTotals.filter(item => (item._sum.estimatedCoins ?? 0) > 100).map(item => item.viewerKey), scene, audio, status: live?.status ?? 'stopped' };
   }
 }
 
@@ -279,13 +312,38 @@ async function main() {
   app.enableCors({ origin: origins, credentials: true });
   app.use((req: Request, _res: Response, next: () => void) => { if (['POST','PUT','PATCH','DELETE'].includes(req.method) && req.headers.origin && !origins.includes(req.headers.origin)) fail(403, 'Invalid origin'); next(); });
   const s = app.get(Services);
+  await s.db.liveChannel.updateMany({ where: { status: { in: ['connecting', 'connected', 'unavailable'] } }, data: { status: 'stopped' } });
   const server = app.getHttpServer();
   const io = new Server(server, { cors: { origin: origins, credentials: true }, path: '/socket.io' });
   s.io = io;
-  io.use(async (socket, next) => { try { const liveId = String(socket.handshake.auth.liveId ?? ''); const token = socket.handshake.auth.overlayToken; if (token) { await s.overlay(liveId, token); socket.data.overlay = true; } else { const req = { cookies: Object.fromEntries((socket.handshake.headers.cookie ?? '').split('; ').filter(Boolean).map(x => { const i = x.indexOf('='); return [x.slice(0,i), decodeURIComponent(x.slice(i+1))]; })) } as AuthedRequest; await s.auth(req); await s.live(liveId, req); } socket.data.liveId = liveId; next(); } catch { next(new Error('Unauthorized')); } });
-  io.on('connection', socket => { socket.join(`live:${socket.data.liveId}`); });
-  await s.subscriber.subscribe('live.events', 'speech.ready');
-  s.subscriber.on('message', async (channel: string, message: string) => { try { if (channel === 'live.events') await s.publish(JSON.parse(message)); else { const job = JSON.parse(message); io.to(`live:${job.liveId}`).emit('speech.ready', job); } } catch (error) { console.error('Event processing failed', error instanceof Error ? error.message : 'unknown'); } });
+  io.use(async (socket, next) => { try { const liveId = String(socket.handshake.auth.liveId ?? ''); const token = socket.handshake.auth.overlayToken; if (token) { await s.overlay(liveId, token); socket.data.overlay = true; } else { const req = { cookies: Object.fromEntries((socket.handshake.headers.cookie ?? '').split('; ').filter(Boolean).map(x => { const i = x.indexOf('='); return [x.slice(0,i), decodeURIComponent(x.slice(i+1))]; })) } as AuthedRequest; await s.auth(req); await s.live(liveId, req); socket.data.controller = true; } socket.data.liveId = liveId; next(); } catch { next(new Error('Unauthorized')); } });
+  const stopTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  io.on('connection', socket => {
+    const liveId = String(socket.data.liveId);
+    socket.join(`live:${liveId}`);
+    void s.db.liveChannel.findUnique({ where: { id: liveId }, select: { status: true } }).then(live => {
+      if (live && socket.connected) socket.emit('live.status', { status: live.status });
+    }).catch(error => console.error('LIVE status sync failed', error));
+    if (socket.data.controller) {
+      const timer = stopTimers.get(liveId);
+      if (timer) clearTimeout(timer);
+      stopTimers.delete(liveId);
+      socket.on('disconnect', () => {
+        const pending = setTimeout(() => {
+          stopTimers.delete(liveId);
+          void (async () => {
+            const controllers = await io.in(`live:${liveId}`).fetchSockets();
+            if (controllers.some(peer => peer.data.controller)) return;
+            const live = await s.db.liveChannel.findUnique({ where: { id: liveId }, select: { status: true } });
+            if (live?.status === 'connecting' || live?.status === 'connected') await s.stopLive(liveId);
+          })().catch(error => console.error('Automatic LIVE stop failed', error));
+        }, 2000);
+        stopTimers.set(liveId, pending);
+      });
+    }
+  });
+  await s.subscriber.subscribe('live.events', 'speech.ready', 'connector.status');
+  s.subscriber.on('message', async (channel: string, message: string) => { try { if (channel === 'live.events') await s.publish(JSON.parse(message)); else if (channel === 'connector.status') { const change = JSON.parse(message); const live = await s.db.liveChannel.findUnique({ where: { id: change.liveId }, select: { status: true } }); if (live?.status === change.status) io.to(`live:${change.liveId}`).emit('live.status', { status: change.status }); } else { const job = JSON.parse(message); io.to(`live:${job.liveId}`).emit('speech.ready', job); } } catch (error) { console.error('Event processing failed', error instanceof Error ? error.message : 'unknown'); } });
   const shutdown = async () => { io.close(); await s.speechQueue.close(); await s.subscriber.quit(); await s.redis.quit(); await s.db.$disconnect(); await app.close(); process.exit(0); };
   process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
   await app.listen(Number(process.env.API_PORT ?? 3001), process.env.API_HOST ?? '0.0.0.0');
