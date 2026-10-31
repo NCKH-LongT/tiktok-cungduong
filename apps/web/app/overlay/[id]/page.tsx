@@ -58,8 +58,14 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       if (currentAudio) currentAudio.volume = previewMutedRef.current ? 0 : ttsVolume;
       if (previewMutedRef.current) window.speechSynthesis?.cancel();
       musicPlayer.current?.setVolume(previewMutedRef.current ? 0 : currentMusic);
+      if (!previewMutedRef.current) {
+        void audioContext?.resume();
+        if (liveActive) musicPlayer.current?.playVideo();
+        void playSpeech();
+      }
     };
     window.addEventListener('message', onPreviewAudio);
+    if (params.get('preview') === '1') window.parent.postMessage({ type: 'overlay.preview-ready' }, window.location.origin);
 
     function showBadge(person: Person) {
       setBadges(current => {
@@ -240,7 +246,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     async function playSpeech() {
       if (speaking) return;
       speaking = true;
-      while (speechQueue.length && !disposed) {
+      while (speechQueue.length && !disposed && !previewMutedRef.current) {
         const job = speechQueue.shift()!;
         const version = stopVersion;
         lastSpeechRef.current = job;
@@ -353,7 +359,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           const y = camera.position.y + (badgeY - camera.pivot.y) * camera.scale.y;
           badge.style.left = `${x / WIDTH * 100}%`;
           badge.style.top = `${y / HEIGHT * 100}%`;
-          badge.style.transform = `translate(-50%, -100%) scale(${Math.min(2.35, camera.scale.x)})`;
+          badge.style.transform = `translate(-50%, -100%) scale(${Math.min(2.35, camera.scale.x) * .8})`;
           const brightness = Math.max(0, 1 - (now - person.badgeBrightAt) / 10000);
           badge.style.opacity = person.state === 'leaving' ? '0' : String(brightness * (focusedKey && person.key !== focusedKey ? .42 : 1));
           badge.style.filter = focusedKey && person.key !== focusedKey ? 'blur(2px)' : '';
@@ -433,8 +439,9 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       socket.on('speech.ready', (job: Speech) => {
         if (job.source === 'tiktok' && !liveActive) return;
         speechQueue.push(job);
-        if (speechQueue.length > 20) speechQueue.shift();
-        void playSpeech();
+        if (previewMutedRef.current) speechQueue.splice(0, speechQueue.length - 1);
+        else if (speechQueue.length > 20) speechQueue.shift();
+        if (!previewMutedRef.current) void playSpeech();
       });
     }
     void start().catch(() => setStatus('Không tải được cảnh'));

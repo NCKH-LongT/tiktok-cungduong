@@ -35,11 +35,12 @@ export default function MusicPlayer({ url, volume, playing, playerRef }: { url: 
     const initialize = () => {
       if (!active || !mount.current || !win.YT || playerRef.current) return;
       playerRef.current = new win.YT.Player(mount.current, {
-        width: '1', height: '1', videoId: id,
-        playerVars: { autoplay: 1, controls: 0, playsinline: 1, origin: window.location.origin },
+        width: '200', height: '200', videoId: id,
+        playerVars: { autoplay: 0, controls: 0, playsinline: 1, origin: window.location.origin },
         events: {
           onReady: ({ target }: { target: YouTubePlayer }) => { target.setVolume(volumeRef.current); if (playingRef.current) target.playVideo(); },
           onAutoplayBlocked: () => setBlocked(true),
+          onStateChange: ({ data }: { data: number }) => { if (data === 1) setBlocked(false); },
         },
       });
     };
@@ -57,7 +58,7 @@ export default function MusicPlayer({ url, volume, playing, playerRef }: { url: 
   useEffect(() => { if (playing) playerRef.current?.playVideo(); else playerRef.current?.pauseVideo(); }, [playing, playerRef]);
   if (!id) return null;
   return <>
-    <div ref={mount} aria-hidden="true" style={{ position: 'absolute', width: 1, height: 1, left: -9999, top: 0, opacity: 0, pointerEvents: 'none' }} />
-    {blocked && <button style={{ position: 'absolute', bottom: 16, left: 16, zIndex: 10 }} onClick={() => { playerRef.current?.playVideo(); setBlocked(false); }}>Bật nhạc YouTube</button>}
+    <div ref={mount} aria-hidden="true" style={{ position: 'absolute', width: 200, height: 200, left: 0, top: 0, opacity: 0, pointerEvents: 'none' }} />
+    {blocked && playing && <button style={{ position: 'absolute', bottom: 16, left: 16, zIndex: 10 }} onClick={() => playerRef.current?.playVideo()}>Bật nhạc YouTube</button>}
   </>;
 }
