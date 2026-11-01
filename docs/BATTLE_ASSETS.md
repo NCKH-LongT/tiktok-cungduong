@@ -33,7 +33,7 @@ Mỗi thư mục xuất `source.png`, `frames/*.png`, `atlas.png`, `atlas.json`,
 
 ## Kết quả hiện tại và điểm cần duyệt
 
-Đã test pipeline với hai ảnh thật: `tutien1.png` tạo 84 frame, `tutien2.png` tạo 94 frame; cả hai có 15 timeline và không còn frame rỗng trong kiểm thử hiện tại. Vùng chồng hiệu ứng được đánh dấu REVIEW_REQUIRED, vẫn cần admin xem trước khi publish. File `arena-fight.png` là ảnh nền nhưng chưa có ground zone được duyệt.
+Đã test pipeline với hai ảnh thật: `tutien1.png` tạo 84 frame, `tutien2.png` tạo 94 frame; cả hai có 15 timeline, atlas không vượt 4096 px mỗi cạnh và không còn frame rỗng trong kiểm thử hiện tại. Vùng chồng hiệu ứng được đánh dấu REVIEW_REQUIRED, vẫn cần admin xem trước khi publish. File `arena-fight.png` là ảnh nền nhưng chưa có ground zone được duyệt.
 
 Đã thử luồng end-to-end bằng sprite fixture nhân tạo trong database test: upload → render atlas → validate → approve → publish v1 → publish v2 → rollback v1. Tài khoản USER đọc được atlas v2 đã lưu (phục vụ trận đang pin version) và danh sách published, nhưng bị từ chối xem draft (HTTP 403). Fixture đã được dọn khỏi database/volume sau browser test. Ba ảnh thật vẫn chỉ ở trạng thái cần duyệt.
 

@@ -173,7 +173,7 @@ def render(source_path, draft_path, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     frame_dir = output_dir / 'frames'
     frame_dir.mkdir(exist_ok=True)
-    atlas_width = 2048
+    atlas_width = min(4096, canvas_width * min(6, len(frames)))
     x = y = row_height = 0
     rendered = []
     positions = {}
@@ -255,11 +255,11 @@ def auto(source_path, output_dir):
     draft_path.write_text(json.dumps(report['draft'], ensure_ascii=False), encoding='utf8')
     result = render(source_path, draft_path, output_dir)
     preview = '''<!doctype html><html lang="vi"><meta charset="utf-8"><title>Sprite preview</title>
-<style>body{background:#222;color:white;font:16px sans-serif;margin:30px}canvas{background:#333;width:768px;height:256px;max-width:100%;image-rendering:pixelated}label{margin:10px}</style>
+<style>body{background:#222;color:white;font:16px sans-serif;margin:30px}canvas{background:#333;width:680px;height:256px;max-width:100%;image-rendering:pixelated}label{margin:10px}</style>
 <h1>Sprite preview · bản nháp cần duyệt</h1><label>Animation <select id="action"></select></label>
 <button id="toggle">Pause</button><button id="restart">Restart</button>
 <label>FPS <input id="fps" type="number" min="4" max="24" value="10"></label>
-<label><input id="loop" type="checkbox" checked> Loop</label><div><canvas id="stage" width="768" height="256"></canvas></div>
+<label><input id="loop" type="checkbox" checked> Loop</label><div><canvas id="stage" width="680" height="256"></canvas></div>
 <p>Mở trang này qua HTTP server. Dùng Frame Editor trong ứng dụng để sửa crop, alpha và pivot.</p>
 <script type="application/json" id="data">__DATA__</script><script>
 const animations=JSON.parse(document.getElementById('data').textContent), list=document.getElementById('action');
@@ -270,7 +270,7 @@ document.getElementById('restart').onclick=()=>{index=0;last=0};list.onchange=()
 function tick(now){const frames=animations[list.value].frames,fps=Math.max(4,Math.min(24,Number(document.getElementById('fps').value)||10));
 if(playing&&now-last>=1000/fps){last=now;if(index<frames.length-1)index++;else if(document.getElementById('loop').checked)index=0}
 const id=frames[index].frameId;if(!cache[id]){cache[id]=new Image();cache[id].src='frames/'+id+'.png'}
-ctx.clearRect(0,0,768,256);if(cache[id].complete)ctx.drawImage(cache[id],0,0);requestAnimationFrame(tick)}requestAnimationFrame(tick)
+ctx.clearRect(0,0,680,256);if(cache[id].complete)ctx.drawImage(cache[id],0,0);requestAnimationFrame(tick)}requestAnimationFrame(tick)
 </script></html>'''
     (output_dir / 'preview.html').write_text(preview.replace('__DATA__', json.dumps(report['draft']['animations']).replace('<', '\\u003c')), encoding='utf8')
     return {'profile': report['profile'], **result}

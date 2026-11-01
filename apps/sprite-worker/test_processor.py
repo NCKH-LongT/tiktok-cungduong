@@ -99,7 +99,9 @@ class ProcessorTests(unittest.TestCase):
                 self.assertTrue((output / 'atlas.png').is_file())
                 self.assertTrue((output / 'atlas.json').is_file())
                 self.assertTrue((output / 'preview.html').is_file())
-                self.assertEqual(Image.open(output / 'atlas.png').getextrema()[3][0], 0)
+                atlas_image = Image.open(output / 'atlas.png')
+                self.assertLessEqual(max(atlas_image.size), 4096)
+                self.assertEqual(atlas_image.getextrema()[3][0], 0)
                 self.assertIn('idle', json.loads((output / 'animations.json').read_text()))
                 rerun = subprocess.run([sys.executable, str(SCRIPT), 'auto', str(source), '-', str(output)],
                                        capture_output=True, text=True, timeout=10)

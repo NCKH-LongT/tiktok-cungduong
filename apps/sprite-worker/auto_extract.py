@@ -114,8 +114,8 @@ def propose(source_path, image):
             frames.append({'id': frame_id, 'crop': crop, 'padding': 8,
                            'pivot': {'x': .5, 'y': 1}, 'footAnchor': {'x': .5, 'y': 1},
                            'headAnchor': {'x': .5, 'y': .12},
-                           'hurtbox': {'x': 314, 'y': 58, 'width': 140, 'height': 185},
-                           **({'hitbox': {'x': 440, 'y': 70, 'width': 220, 'height': 145}} if action in ('attack', 'combo1', 'combo2', 'skill_q', 'skill_w', 'skill_e', 'skill_r') else {}),
+                           'hurtbox': {'x': 270, 'y': 58, 'width': 140, 'height': 185},
+                           **({'hitbox': {'x': 395, 'y': 70, 'width': 220, 'height': 145}} if action in ('attack', 'combo1', 'combo2', 'skill_q', 'skill_w', 'skill_e', 'skill_r') else {}),
                            'reviewRequired': status != 'PASS', 'reviewed': False,
                            'mask': {'auto': True, 'strip': [left, top, width, height]}})
             events = ['attack.visual-impact'] if action == 'attack' and ordinal == count - 1 else []
@@ -128,7 +128,7 @@ def propose(source_path, image):
                               'rootMotion': {'x': 0, 'y': 0}, 'transitions': [], 'frames': timeline}
     idle_heights = [f['crop']['height'] for f in frames if f['id'].startswith('idle_')]
     scale = round(min(3.5, max(1.2, 176 / statistics.median(idle_heights))), 3)
-    draft = {'canvas': {'width': 768, 'height': 256}, 'sourceScale': scale,
+    draft = {'canvas': {'width': 680, 'height': 256}, 'sourceScale': scale,
              'frames': frames, 'animations': animations, 'character': profile['character']}
     return {'profile': profile['name'], 'draft': draft, 'candidates': candidates,
             'quality': quality,
