@@ -19,6 +19,8 @@ import { configuredOrigins } from './origins.js';
 import { turnstileKeys } from './turnstile.js';
 import { validYouTubeVideoUrl } from './youtube.js';
 import type { Request, Response } from 'express';
+import express from 'express';
+import { BattleAssetsController, BattleAssetsService } from './battle-assets.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const fail = (status: number, message: string): never => { throw new HttpException({ error: message }, status); };
@@ -505,11 +507,12 @@ class OverlayController {
   }
 }
 
-@Module({ controllers: [HealthController, AuthController, BillingController, UsersController, AdminController, LivesController, OverlayController], providers: [Services, SessionGuard, PaidGuard] })
+@Module({ controllers: [HealthController, AuthController, BillingController, UsersController, AdminController, LivesController, OverlayController, BattleAssetsController], providers: [Services, SessionGuard, PaidGuard, BattleAssetsService] })
 class AppModule {}
 
 async function main() {
   const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
+  app.use('/battle-assets/upload', express.raw({ type: 'application/octet-stream', limit: '12mb' }));
   app.use(helmet()); app.use(cookieParser());
   const origins = configuredOrigins(process.env.CORS_ORIGINS ?? process.env.PUBLIC_APP_URL ?? 'http://localhost:3000');
   app.enableCors({ origin: origins, credentials: true });

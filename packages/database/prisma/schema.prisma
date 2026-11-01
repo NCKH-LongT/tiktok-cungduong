@@ -27,24 +27,132 @@ enum ChannelStatus {
 }
 
 model User {
-  id           String        @id @default(uuid()) @db.Uuid
-  email        String        @unique
-  username     String        @unique
-  passwordHash String
-  role         RoleCode      @default(USER)
-  ttsProvider  String        @default("google")
-  maxAiReplyWords Int        @default(35)
-  active       Boolean       @default(true)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  deletedAt    DateTime?
-  accessUntil  DateTime?
-  sessions     AuthSession[]
-  channels     LiveChannel[]
-  audit        AuditLog[]
-  quota        UserQuota?
-  roles        UserRole[]
-  paymentOrders PaymentOrder[]
+  id              String         @id @default(uuid()) @db.Uuid
+  email           String         @unique
+  username        String         @unique
+  passwordHash    String
+  role            RoleCode       @default(USER)
+  ttsProvider     String         @default("google")
+  maxAiReplyWords Int            @default(35)
+  active          Boolean        @default(true)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  deletedAt       DateTime?
+  accessUntil     DateTime?
+  sessions        AuthSession[]
+  channels        LiveChannel[]
+  audit           AuditLog[]
+  quota           UserQuota?
+  roles           UserRole[]
+  paymentOrders   PaymentOrder[]
+  battleAssets    BattleAsset[]
+}
+
+enum BattleAssetKind {
+  BACKGROUND
+  SPRITE
+}
+
+enum BattleAssetStatus {
+  UPLOADED
+  PROCESSING
+  NEEDS_REVIEW
+  DRAFT
+  READY_FOR_TEST
+  APPROVED
+  PUBLISHED
+  ARCHIVED
+  FAILED
+}
+
+model BattleAsset {
+  id          String                     @id @default(uuid()) @db.Uuid
+  kind        BattleAssetKind
+  name        String
+  originalKey String                     @unique
+  mimeType    String
+  checksum    String
+  width       Int
+  height      Int
+  status      BattleAssetStatus          @default(UPLOADED)
+  ownerId     String                     @db.Uuid
+  createdAt   DateTime                   @default(now())
+  updatedAt   DateTime                   @updatedAt
+  owner       User                       @relation(fields: [ownerId], references: [id])
+  versions    BattleAssetVersion[]
+  background  BattleBackground?
+  character   BattleCharacterDefinition?
+}
+
+model BattleAssetVersion {
+  id            String                  @id @default(uuid()) @db.Uuid
+  assetId       String                  @db.Uuid
+  version       Int
+  status        BattleAssetStatus       @default(DRAFT)
+  metadata      Json                    @default("{}")
+  atlasKey      String?
+  checksum      String?
+  createdAt     DateTime                @default(now())
+  publishedAt   DateTime?
+  publishedById String?                 @db.Uuid
+  asset         BattleAsset             @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  animations    BattleAnimation[]
+  validations   BattleAssetValidation[]
+
+  @@unique([assetId, version])
+  @@index([status, publishedAt])
+}
+
+model BattleCharacterDefinition {
+  id              String       @id @default(uuid()) @db.Uuid
+  code            String       @unique
+  name            String
+  element         String
+  color           String
+  spawnSide       String
+  assetId         String?      @unique @db.Uuid
+  activeVersionId String?      @db.Uuid
+  asset           BattleAsset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+}
+
+model BattleBackground {
+  id              String      @id @default(uuid()) @db.Uuid
+  assetId         String      @unique @db.Uuid
+  activeVersionId String?     @db.Uuid
+  isActive        Boolean     @default(false)
+  asset           BattleAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+}
+
+model BattleAnimation {
+  id        String                 @id @default(uuid()) @db.Uuid
+  versionId String                 @db.Uuid
+  name      String
+  config    Json                   @default("{}")
+  version   BattleAssetVersion     @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  frames    BattleAnimationFrame[]
+
+  @@unique([versionId, name])
+}
+
+model BattleAnimationFrame {
+  id          String          @id @default(uuid()) @db.Uuid
+  animationId String          @db.Uuid
+  frameId     String
+  ordinal     Int
+  durationMs  Int
+  events      Json            @default("[]")
+  animation   BattleAnimation @relation(fields: [animationId], references: [id], onDelete: Cascade)
+
+  @@unique([animationId, ordinal])
+}
+
+model BattleAssetValidation {
+  id        String             @id @default(uuid()) @db.Uuid
+  versionId String             @db.Uuid
+  passed    Boolean
+  warnings  Json               @default("[]")
+  createdAt DateTime           @default(now())
+  version   BattleAssetVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
 }
 
 model Role {

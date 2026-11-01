@@ -1,0 +1,29 @@
+pipeline {
+  agent any
+  options { timestamps(); disableConcurrentBuilds(); buildDiscarder(logRotator(numToKeepStr: '10')) }
+  stages {
+    stage('Checkout feature branch') {
+      steps {
+        checkout scm
+        sh 'test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/feature/battle-arena)"'
+      }
+    }
+    stage('Build isolated test images') {
+      steps {
+        sh 'POSTGRES_PASSWORD=battle-test ADMIN_EMAIL=test@example.invalid ADMIN_PASSWORD=abcdefghijklmnop docker compose -f docker-compose.yml -f docker-compose.battle.yml config -q'
+        sh 'docker build -f infrastructure/docker/Dockerfile -t tiktok-cungduong-battle-app:ci .'
+        sh 'docker build -f infrastructure/battle-worker/Dockerfile -t tiktok-cungduong-battle-worker:ci .'
+      }
+    }
+    stage('Typecheck and tests') {
+      steps {
+        sh 'docker run --rm tiktok-cungduong-battle-app:ci npm run typecheck'
+        sh 'docker run --rm tiktok-cungduong-battle-app:ci npm test'
+        sh 'docker run --rm tiktok-cungduong-battle-worker:ci python3 -m unittest discover -s apps/sprite-worker -p "test_*.py"'
+      }
+    }
+  }
+  post {
+    failure { echo 'Battle Arena test pipeline failed. Inspect the stage log; no production deploy was attempted.' }
+  }
+}

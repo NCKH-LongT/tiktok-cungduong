@@ -1,0 +1,74 @@
+name: tiktok-cungduong-battle-test
+services:
+  battle-storage-init:
+    image: busybox:1.37
+    command: ["sh", "-c", "chown 1000:1000 /data"]
+    volumes:
+      - battle-assets:/data
+    restart: "no"
+  api:
+    image: tiktok-cungduong-battle-app:test
+    environment:
+      BATTLE_ASSET_ROOT: /var/lib/cungduong/battle-assets
+      TIKTOK_CONNECTOR_MODE: simulator
+      PUBLIC_APP_URL: http://localhost:${BATTLE_HTTP_PORT:-18091}
+      PUBLIC_OVERLAY_URL: http://localhost:${BATTLE_HTTP_PORT:-18091}
+      CORS_ORIGINS: http://localhost:${BATTLE_HTTP_PORT:-18091}
+      TURNSTILE_SECRET_KEY: ""
+      TURNSTILE_SITE_KEY: ""
+      LOCAL_TURNSTILE_TEST: "false"
+    volumes:
+      - battle-assets:/var/lib/cungduong/battle-assets
+    depends_on:
+      battle-storage-init: { condition: service_completed_successfully }
+  battle-worker:
+    image: tiktok-cungduong-battle-worker:test
+    build: { context: ., dockerfile: infrastructure/battle-worker/Dockerfile }
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cungduong}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cungduong}
+      REDIS_URL: redis://redis:6379
+      BATTLE_ASSET_ROOT: /var/lib/cungduong/battle-assets
+    volumes:
+      - battle-assets:/var/lib/cungduong/battle-assets
+    depends_on:
+      api: { condition: service_healthy }
+    mem_limit: 768m
+    cpus: 1.0
+    restart: unless-stopped
+  web:
+    image: tiktok-cungduong-battle-app:test
+  nginx:
+    ports: !override ["${BATTLE_HTTP_PORT:-18091}:80"]
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        cat > /etc/nginx/conf.d/default.conf <<'EOF'
+        server {
+          listen 80;
+          server_name _;
+          client_max_body_size 13m;
+          location /socket.io/ {
+            proxy_pass http://api:3001;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $$http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $$host;
+          }
+          location / {
+            proxy_pass http://web:3000;
+            proxy_set_header Host $$host;
+            proxy_set_header X-Forwarded-Proto $$scheme;
+          }
+        }
+        EOF
+        exec nginx -g 'daemon off;'
+  tiktok-worker:
+    profiles: [production]
+  ai-worker:
+    profiles: [production]
+  local-tts:
+    profiles: [production]
+volumes:
+  battle-assets:

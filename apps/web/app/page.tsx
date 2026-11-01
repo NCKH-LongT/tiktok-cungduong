@@ -134,7 +134,7 @@ export default function Home() {
         <button disabled={signingIn || Boolean(siteKey && !captcha)}>{signingIn ? 'Đang đăng nhập…' : 'Đăng nhập'}</button>
       </form>
     </section> : <>
-      <div className="row"><span className="pill">{user.role}</span><span>{user.email}</span>{['ADMIN', 'SUPER_ADMIN'].includes(user.role) && <a href="/admin">Quản trị →</a>}</div>
+      <div className="row"><span className="pill">{user.role}</span><span>{user.email}</span>{['ADMIN', 'SUPER_ADMIN'].includes(user.role) && <a href="/admin">Quản trị →</a>}<a href="/battle-arena">Battle Arena →</a></div>
       {billing && <section className="card" style={{ marginTop: 24, maxWidth: 600 }}>
         <h2>Gói sử dụng LIVE</h2>
         {billing.adminFree ? <p className="success">Tài khoản quản trị được sử dụng miễn phí.</p> :

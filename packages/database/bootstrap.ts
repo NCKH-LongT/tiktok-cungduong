@@ -15,6 +15,21 @@ async function main() {
       create: { email, username: email.split('@')[0], passwordHash: hash, role: 'SUPER_ADMIN' },
       update: {},
     });
+    const permission = await db.permission.upsert({
+      where: { code: 'battle.assets.manage' },
+      create: { code: 'battle.assets.manage' },
+      update: {},
+    });
+    const adminRole = await db.role.upsert({
+      where: { code: 'ADMIN' },
+      create: { code: 'ADMIN', name: 'Administrator' },
+      update: {},
+    });
+    await db.rolePermission.upsert({
+      where: { roleId_permissionId: { roleId: adminRole.id, permissionId: permission.id } },
+      create: { roleId: adminRole.id, permissionId: permission.id },
+      update: {},
+    });
     console.log('Bootstrap admin ready');
   } finally { await db.$disconnect(); }
 }
