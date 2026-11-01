@@ -12,6 +12,7 @@ import helmet from 'helmet';
 import { z } from 'zod';
 import type { Webhook, WebhookData } from '@payos/node';
 import { giftDedupKey, hasLiveAccess, liveEventSchema, shouldAnswerComment, type LiveEvent } from '@cd/shared';
+import { classifyComment } from '@cd/shared/smart-interactions';
 import { encryptGeminiKey } from '@cd/shared/gemini-key';
 import { DAY_PASS_VND, newOrderCode, payOSClient, settlePaidOrder } from './billing.js';
 import { revenueWindow } from './revenue.js';
@@ -125,15 +126,46 @@ class Services {
     } else if (userKey && event.user) {
       await this.db.viewer.upsert({ where: { liveId_userKey: { liveId: event.liveId, userKey } }, create: { liveId: event.liveId, userKey, nickname: event.user.nickname, avatarUrl: event.user.avatarUrl }, update: { nickname: event.user.nickname, ...(event.user.avatarUrl ? { avatarUrl: event.user.avatarUrl } : {}), lastSeenAt: new Date(), deletedAt: null } });
     }
-    let newGift = true;
-    if (event.eventType === 'gift.received' && event.payload.repeatEnd !== false) {
+    // Store the largest cumulative combo count. An x1 -> x5 -> x10 streak contributes 10, not 16.
+    let giftChanged = false;
+    if (event.eventType === 'gift.received') {
       const p = event.payload;
-      const giftCreated = await this.db.giftEvent.createMany({ data: [{ liveId: event.liveId, dedupKey: giftDedupKey(event), viewerKey: userKey ?? 'unknown', nickname: event.user?.nickname, giftId: typeof p.giftId === 'string' ? p.giftId : null, giftName: typeof p.giftName === 'string' ? p.giftName : 'Gift', quantity: Math.max(1, Math.min(10000, Number(p.quantity) || 1)), estimatedCoins: typeof p.estimatedCoins === 'number' ? Math.max(0, Math.floor(p.estimatedCoins)) * Math.max(1, Math.min(10000, Number(p.quantity) || 1)) : null, source: event.source, occurredAt: new Date(event.timestamp) }], skipDuplicates: true });
-      newGift = giftCreated.count > 0;
+      const quantity = Math.max(1, Math.min(10000, Math.floor(Number(p.quantity) || 1)));
+      const unitCoins = typeof p.estimatedCoins === 'number' && Number.isFinite(p.estimatedCoins)
+        ? Math.max(0, Math.floor(p.estimatedCoins)) : null;
+      const key = giftDedupKey(event);
+      const data = {
+        liveId: event.liveId, dedupKey: key, viewerKey: userKey ?? 'unknown',
+        nickname: event.user?.nickname,
+        giftId: typeof p.giftId === 'string' ? p.giftId : null,
+        giftName: typeof p.giftName === 'string' ? p.giftName : 'Gift',
+        quantity, estimatedCoins: unitCoins == null ? null : unitCoins * quantity,
+        source: event.source, occurredAt: new Date(event.timestamp),
+      };
+      // The conditional update prevents an older combo update from decreasing the count.
+      const changed = await this.db.$transaction(async tx => {
+        const inserted = await tx.giftEvent.createMany({ data: [data], skipDuplicates: true });
+        if (inserted.count) return true;
+        const updated = await tx.giftEvent.updateMany({
+          where: { dedupKey: key, quantity: { lt: quantity } },
+          data: { quantity, estimatedCoins: data.estimatedCoins },
+        });
+        return updated.count > 0;
+      });
+      giftChanged = changed;
     }
-    if (!newGift) return true;
-    this.io?.to(`live:${event.liveId}`).emit('live.event', event);
-    if (newGift && (event.source === 'tiktok' || includeSimulatorAI)) await this.enqueueAI(event);
+    // Live events remain available to Farm animations; duplicates don't replay their effects.
+    if (event.eventType !== 'gift.received' || giftChanged || event.payload.repeatEnd !== false) {
+      this.io?.to(`live:${event.liveId}`).emit('live.event', event);
+    }
+    if (event.eventType === 'gift.received') {
+      if (giftChanged) this.io?.to(`live:${event.liveId}`).emit('gift.leaderboard.changed', { liveId: event.liveId });
+      // Thank once on the final combo signal, even if the cumulative count was saved earlier.
+      if (event.payload.repeatEnd === false) return true;
+      const firstFinal = await this.redis.set(`gift:final:${key}`, '1', 'EX', 86400, 'NX');
+      if (!firstFinal) return true;
+    }
+    if (event.source === 'tiktok' || includeSimulatorAI) await this.enqueueAI(event);
     return true;
   }
   async enqueueAI(event: LiveEvent) {
@@ -141,6 +173,38 @@ class Services {
     const config = await this.db.aIConfiguration.findUnique({ where: { liveId: event.liveId } });
     if (!config?.enabled) return;
     if (event.eventType === 'chat.comment' && !shouldAnswerComment(event.payload.text)) return;
+    // Fixed windows prevent hot LIVE rooms from extending batching indefinitely.
+    const intent = event.eventType === 'chat.comment' ? classifyComment(event.payload.text) : 'OTHER';
+    const batchType = event.eventType === 'gift.received' ? 'gift'
+      : intent === 'BUDDHA_CHANT' ? 'chant'
+      : intent.startsWith('PRAYER_') ? 'prayer' : null;
+    if (batchType && event.user?.id && event.source === 'tiktok') {
+      const windowMs = batchType === 'gift' ? 10000 : 8000;
+      const windowId = Math.floor(Date.now() / windowMs);
+      const identity = batchType === 'gift'
+        ? String(event.payload.giftId ?? event.payload.giftName ?? 'unknown')
+        : batchType === 'prayer' ? intent : 'chant';
+      const batchKey = `ai:batch:${event.liveId}:${event.sessionId ?? 'room'}:${batchType}:${identity}:${windowId}`;
+      const item = JSON.stringify({ userKey: event.user.id, nickname: event.user.nickname ?? 'phật tử', eventId: event.eventId, giftName: event.payload.giftName, intent });
+      await this.redis.rpush(batchKey, item);
+      await this.redis.expire(batchKey, 120);
+      const scheduled = await this.redis.set(`ai:batch:scheduled:${batchKey}`, '1', 'EX', 120, 'NX');
+      if (scheduled) {
+        const live = await this.db.liveChannel.findUnique({ where: { id: event.liveId }, select: { ownerId: true } });
+        if (!live) return;
+        const quota = await this.db.userQuota.findUnique({ where: { userId: live.ownerId } });
+        const dayKey = `ai:day:${live.ownerId}:${new Date().toISOString().slice(0, 10)}`;
+        const count = await this.redis.incr(dayKey);
+        if (count === 1) await this.redis.expire(dayKey, 172800);
+        if (count > (quota?.maxAiPerDay ?? 100)) return;
+        const delay = Math.max(250, (windowId + 1) * windowMs - Date.now() + 250);
+        await this.speechQueue.add('generate-batch', { batchKey, batchType, liveId: event.liveId, event }, {
+          jobId: hash(batchKey), delay, priority: batchType === 'gift' ? 1 : batchType === 'chant' ? 2 : 3,
+          removeOnComplete: true, attempts: 2, backoff: { type: 'exponential', delay: 1000 },
+        });
+      }
+      return;
+    }
     if (event.eventType === 'gift.received' && event.payload.repeatEnd === false) return;
     const isJoin = event.eventType === 'viewer.join';
     const userKey = event.user?.id ?? event.user?.uniqueId ?? 'anon';
@@ -185,7 +249,7 @@ class Services {
     if (firstComment) await this.redis.set(`ai:comment:answered:${event.liveId}:${userKey}`, '1', 'EX', 86400);
   }
   async leaderboard(id: string, includeSimulator = false) {
-    const rows = await this.db.giftEvent.groupBy({ by: ['viewerKey'], where: { liveId: id, ...(includeSimulator ? {} : { source: EventSource.tiktok }) }, _sum: { quantity: true, estimatedCoins: true }, orderBy: { _sum: { quantity: 'desc' } }, take: 5 });
+    const rows = await this.db.giftEvent.groupBy({ by: ['viewerKey'], where: { liveId: id, ...(includeSimulator ? {} : { source: EventSource.tiktok }) }, _sum: { quantity: true, estimatedCoins: true }, orderBy: { _sum: { estimatedCoins: 'desc' } }, take: 5 });
     const viewers = await this.db.viewer.findMany({ where: { liveId: id, userKey: { in: rows.map(r => r.viewerKey) } }, select: { userKey: true, nickname: true, avatarUrl: true } });
     const byKey = new Map(viewers.map(viewer => [viewer.userKey, viewer]));
     return rows.map(r => ({ viewerKey: r.viewerKey, nickname: byKey.get(r.viewerKey)?.nickname, avatarUrl: byKey.get(r.viewerKey)?.avatarUrl, gifts: r._sum.quantity ?? 0, estimatedCoins: r._sum.estimatedCoins }));

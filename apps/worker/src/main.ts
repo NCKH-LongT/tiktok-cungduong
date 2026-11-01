@@ -6,6 +6,7 @@ import { Redis } from 'ioredis';
 import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import { TikTokLiveConnection, WebcastEvent, ControlEvent } from 'tiktok-live-connector';
 import { hasLiveAccess, type LiveEvent } from '@cd/shared';
+import { buildBatchSpeech } from '@cd/shared/smart-interactions';
 import { decryptGeminiKey } from '@cd/shared/gemini-key';
 import { asNumber, asRecord, asString, normalizeTikTokComment, normalizeTikTokGift, normalizeTikTokUser } from './tiktok-events.js';
 import { addressViewer, limitReplyWords } from './ai-text.js';
@@ -119,6 +120,11 @@ async function runAI() {
     return answer;
   }
   const worker = new Worker('speech', async job => {
+    const batchKey = typeof job.data.batchKey === 'string' ? job.data.batchKey : null;
+    const batchType = job.data.batchType as 'gift' | 'chant' | 'prayer' | undefined;
+    const batchRows = batchKey ? await redis.lrange(batchKey, 0, -1) : [];
+    if (batchKey && !batchRows.length) return;
+    const batchMembers = batchRows.map(row => JSON.parse(row) as { userKey: string; nickname: string; giftName?: string });
     const input = job.data.event as LiveEvent;
     const liveAtStart = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { ownerId: true, deletedAt: true, status: true, owner: { select: { role: true, accessUntil: true, ttsProvider: true, maxAiReplyWords: true } } } });
     if (!liveAtStart || liveAtStart.deletedAt || (input.source === 'tiktok' && (liveAtStart.status !== 'connected' || !hasLiveAccess(liveAtStart.owner.role, liveAtStart.owner.accessUntil)))) return;
@@ -129,7 +135,12 @@ async function runAI() {
     let text: string;
     let usedFallback = false;
     let prompt = '';
-    if (input.eventType === 'gift.received') {
+    if (batchKey && batchType) {
+      const uniqueNames = [...new Map(batchMembers.map(member => [member.userKey, member.nickname])).values()];
+      text = buildBatchSpeech(batchType, uniqueNames, batchMembers[0]?.giftName);
+      usedFallback = true; // deterministic template: no Gemini token usage
+      prompt = `Batch ${batchType}, participants: ${uniqueNames.length}`;
+    } else if (input.eventType === 'gift.received') {
       const giftName = String(input.payload.giftName ?? 'quà').slice(0, 60);
       const coins = Math.max(0, Number(input.payload.estimatedCoins) || 0) * Math.max(1, Number(input.payload.quantity) || 1);
       const maxWords = Math.min(replyLimit, coins > 100 ? 55 : 25);
@@ -172,9 +183,9 @@ async function runAI() {
         text = `${name} ơi, Chánh điện đang tạm chậm phản hồi. Mong ${name} giữ lòng bình an và thử gửi lại sau ít phút.`;
       }
     }
-    text = limitReplyWords(addressViewer(text, name), replyLimit);
+    text = batchKey ? text : limitReplyWords(addressViewer(text, name), replyLimit);
     if (!(await db.liveChannel.findFirst({ where: { id: input.liveId, deletedAt: null }, select: { id: true } }))) return;
-    const interaction = await db.aIInteraction.create({ data: { liveId: input.liveId, sourceEventId: input.eventId, prompt: prompt || null, answer: text, status: usedFallback ? 'fallback' : 'completed' } });
+    const interaction = await db.aIInteraction.create({ data: { liveId: input.liveId, sourceEventId: batchKey ? null : input.eventId, prompt: prompt || null, answer: text, status: batchKey ? 'batch_template' : usedFallback ? 'fallback' : 'completed' } });
     let audio: string | undefined;
     const voice = await db.audioConfiguration.findUnique({ where: { liveId: input.liveId } });
     const voiceEnabled = voice?.ttsEnabled !== false;
@@ -214,7 +225,12 @@ async function runAI() {
       const live = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { status: true, owner: { select: { role: true, accessUntil: true } } } });
       if (live?.status !== 'connected' || !hasLiveAccess(live.owner.role, live.owner.accessUntil)) return;
     }
-    if (await db.liveChannel.findFirst({ where: { id: input.liveId, deletedAt: null }, select: { id: true } })) await redis.publish('speech.ready', JSON.stringify({ liveId: input.liveId, text, audio, voiceEnabled, sourceEventId: input.eventId, source: input.source }));
+    if (await db.liveChannel.findFirst({ where: { id: input.liveId, deletedAt: null }, select: { id: true } })) {
+      // Best-effort once-only playback for delayed batches, including BullMQ retries.
+      const mayPublish = !batchKey || await redis.set(`ai:batch:delivered:${batchKey}`, '1', 'EX', 86400, 'NX');
+      if (mayPublish) await redis.publish('speech.ready', JSON.stringify({ liveId: input.liveId, text, audio, voiceEnabled, sourceEventId: batchKey ?? input.eventId, source: input.source }));
+      if (batchKey) await redis.del(batchKey);
+    }
   }, { connection: redis, concurrency: 1 });
   async function removeDeletedJob(job: { data: { event?: { liveId?: string } }; remove: () => Promise<unknown> } | undefined) {
     const liveId = job?.data?.event?.liveId;
