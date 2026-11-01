@@ -37,3 +37,10 @@ test('ordinary gifts complete immediately; streak gifts wait for repeatEnd', () 
   assert.equal(normalizeTikTokGift({ giftDetails: { giftType: 1 }, repeatEnd: false }).repeatEnd, false);
   assert.equal(normalizeTikTokGift({ giftDetails: { giftType: 1 }, repeatEnd: true }).repeatEnd, true);
 });
+
+test('gift images use the TikTok HTTPS image and reject unsafe URLs', () => {
+  const gift = normalizeTikTokGift({ giftDetails: { giftImage: { url: ['https://example.invalid/rose.png'] } } });
+  assert.equal(gift.giftImageUrl, 'https://example.invalid/rose.png');
+  assert.equal(normalizeTikTokGift({ giftDetails: { giftImage: { url: ['javascript:alert(1)'] } } }).giftImageUrl, undefined);
+  assert.equal(normalizeTikTokGift({ giftPictureUrl: 'https://example.invalid/legacy.png' }).giftImageUrl, 'https://example.invalid/legacy.png');
+});

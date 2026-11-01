@@ -7,11 +7,17 @@ import BuddhistUserBadge from './BuddhistUserBadge';
 import styles from './overlay.module.css';
 
 type LiveEvent = { eventId: string; eventType: string; source: string; user?: { id?: string; uniqueId?: string; nickname?: string; avatarUrl?: string }; payload: Record<string, unknown> };
-type Person = { key: string; name: string; avatarUrl?: string; seat: number; body: Container; sprite: Sprite; glow: Graphics; label: Text; state: 'walking' | 'lowering' | 'bowing' | 'kneeling' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; phaseUntil: number; highlightUntil: number; badgeBrightAt: number };
+type Person = { key: string; name: string; avatarUrl?: string; seat: number; body: Container; sprite: Sprite; glow: Graphics; label: Text; totalGiftCoins: number; state: 'walking' | 'lowering' | 'bowing' | 'kneeling' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; phaseUntil: number; highlightUntil: number; badgeBrightAt: number };
 type Badge = { key: string; name: string; avatarUrl?: string; vip: boolean };
 type Speech = { text: string; audio?: string; source?: string; voiceEnabled?: boolean };
 type Prayer = { id: string; name: string; avatarUrl?: string; text: string; top: number; duration: number };
+type FallingGift = { id: string; name: string; imageUrl?: string; left: number; top: number; size: number; duration: number };
 const WIDTH = 900, HEIGHT = 1600;
+const giftPoints = (payload: Record<string, unknown>) => {
+  const coins = Number(payload.estimatedCoins);
+  const quantity = Number(payload.quantity);
+  return Math.max(1, Number.isFinite(coins) ? coins : 1) * Math.max(1, Number.isFinite(quantity) ? quantity : 1);
+};
 
 export default function Overlay({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -33,6 +39,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   const [voiceReady, setVoiceReady] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [prayers, setPrayers] = useState<Prayer[]>([]);
+  const [fallingGifts, setFallingGifts] = useState<FallingGift[]>([]);
 
   useEffect(() => {
     let app: Application | undefined, socket: Socket | undefined, disposed = false;
@@ -46,6 +53,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     const giftQueue: string[] = [], speechQueue: Speech[] = [];
     const people = new Map<string, Person>();
     const vipViewerKeys = new Set<string>();
+    const giftCoinsByViewer = new Map<string, number>();
     const pendingJoins = new Map<string, LiveEvent>();
     const seatColumns = [255, 635, 110, 790, 365];
     const seats = Array.from({ length: 40 }, (_, index) => ({ x: seatColumns[index % 5], y: 1010 + Math.floor(index / 5) * 70, occupied: false }));
@@ -121,7 +129,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       voicePlaybackBlocked = false;
       activeGift = null; focusedKey = '';
       for (const person of people.values()) { scene.removeChild(person.body); person.body.destroy({ children: true }); seats[person.seat].occupied = false; }
-      people.clear(); badgeRefs.current.clear(); setBadges([]); setPrayers([]); setSpeech('');
+      people.clear(); badgeRefs.current.clear(); setBadges([]); setPrayers([]); setFallingGifts([]); setSpeech('');
       try { currentSource?.stop(); } catch { /* The source already finished. */ }
       window.speechSynthesis?.cancel();
       musicPlayer.current?.setVolume(0); musicPlayer.current?.pauseVideo();
@@ -153,7 +161,10 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       seats[seat].occupied = true;
       const { Container, Graphics, Sprite, Text } = Pixi;
       const body = new Container();
-      const glow = new Graphics().circle(0, 0, 58).fill({ color: 0xffdc7c, alpha: .45 });
+      const glow = new Graphics()
+        .circle(0, 0, 79).fill({ color: 0xf5a900, alpha: .35 })
+        .circle(0, 0, 61).stroke({ color: 0xffd21f, alpha: 1, width: 8 })
+        .circle(0, 0, 45).fill({ color: 0xffec90, alpha: .55 });
       glow.alpha = 0;
       const sprite = new Sprite(poses.standing);
       sprite.anchor.set(.5, 1);
@@ -165,7 +176,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       body.x = 450; body.y = 1590; scene.addChild(body);
       const target = seats[seat];
       body.zIndex = target.y;
-      const person: Person = { key, name, avatarUrl: event.user?.avatarUrl, seat, body, sprite, glow, label, state: 'walking', x: 450, y: 1590, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, phaseUntil: 0, highlightUntil: 0, badgeBrightAt: Date.now() };
+      const person: Person = { key, name, avatarUrl: event.user?.avatarUrl, seat, body, sprite, glow, label, totalGiftCoins: giftCoinsByViewer.get(key) ?? 0, state: 'walking', x: 450, y: 1590, targetX: target.x, targetY: target.y, last: Date.now(), bubbleUntil: 0, phaseUntil: 0, highlightUntil: 0, badgeBrightAt: Date.now() };
       if (focusedKey && key !== focusedKey && blurFilter) body.filters = [blurFilter];
       setPose(person, 'standing');
       people.set(key, person);
@@ -201,10 +212,21 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           setPrayers(current => [...current.slice(-7), { id: event.eventId, name: event.user?.nickname ?? 'Phật tử', avatarUrl: event.user?.avatarUrl, text: message, top: 18 + Math.random() * 64, duration: 10 + Math.min(15, message.length * .09) + Math.random() * 4 }]);
         }
       }
-      if (event.eventType === 'gift.received' && person && event.payload.repeatEnd !== false) {
-        giftQueue.push(person.key);
-        person.highlightUntil = Date.now() + 3500;
-        if (person.state === 'kneeling') { person.state = 'bowing'; person.phaseUntil = Date.now() + 1000; person.badgeBrightAt = Date.now(); setPose(person, 'bowing'); }
+      if (event.eventType === 'gift.received' && event.payload.repeatEnd !== false) {
+        const points = giftPoints(event.payload);
+        const size = Math.min(146, 42 + Math.log10(points + 1) * 28);
+        const side = Math.random() < .5 ? 0 : 1;
+        const image = event.payload.giftImageUrl;
+        const imageUrl = typeof image === 'string' && /^https:\/\//i.test(image) ? image : undefined;
+        setFallingGifts(current => [...current.slice(-11), { id: event.eventId, name: String(event.payload.giftName ?? 'Quà tặng'), imageUrl, left: side ? 70 + Math.random() * 17 : 9 + Math.random() * 18, top: 15 + Math.random() * 17, size, duration: 2.8 + Math.random() * .8 }]);
+        if (person) {
+          giftQueue.push(person.key);
+          person.totalGiftCoins += points;
+          giftCoinsByViewer.set(person.key, person.totalGiftCoins);
+          person.highlightUntil = Date.now() + 3500;
+          person.badgeBrightAt = Date.now();
+          if (person.state === 'kneeling') { person.state = 'bowing'; person.phaseUntil = Date.now() + 1000; setPose(person, 'bowing'); }
+        }
       }
       if (event.eventType === 'viewer.like') fish();
     }
@@ -381,7 +403,9 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
             setPose(person, 'kneeling');
           }
           person.body.x = person.x; person.body.y = person.y;
-          person.glow.alpha = now < person.highlightUntil ? .75 + Math.sin(now / 120) * .15 : 0;
+          const donorLevel = Math.min(1, Math.log10(person.totalGiftCoins + 1) / 4);
+          person.glow.alpha = now < person.highlightUntil ? .88 + Math.sin(now / 120) * .1 : person.totalGiftCoins > 0 ? .45 + donorLevel * .48 + Math.sin(now / 700) * .05 : 0;
+          person.glow.scale.set(.65 + donorLevel * .65);
           if (person.bubbleUntil && now > person.bubbleUntil) { person.label.visible = false; person.bubbleUntil = 0; }
           if (now - person.last > ttl) leave(person);
         }
@@ -423,7 +447,8 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           badge.style.left = `${x / WIDTH * 100}%`;
           badge.style.top = `${y / HEIGHT * 100}%`;
           badge.style.transform = `translate(-50%, -100%) scale(${Math.min(2.35, camera.scale.x) * .8})`;
-          const brightness = Math.max(0, 1 - (now - person.badgeBrightAt) / 10000);
+          const fadeMs = 10000 + Math.min(50000, Math.log10(person.totalGiftCoins + 1) * 12000);
+          const brightness = Math.max(0, 1 - (now - person.badgeBrightAt) / fadeMs);
           badge.style.opacity = person.state === 'leaving' ? '0' : String(brightness * (focusedKey && person.key !== focusedKey ? .42 : 1));
           badge.style.filter = focusedKey && person.key !== focusedKey ? 'blur(2px)' : '';
         }
@@ -454,6 +479,10 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       setMusicUrl(snapshot.audio?.musicUrl ?? '');
       setLeaders(snapshot.leaderboard ?? []);
       for (const key of snapshot.vipViewerKeys ?? []) vipViewerKeys.add(key);
+      for (const [key, coins] of Object.entries(snapshot.giftCoinsByViewer ?? {})) {
+        const amount = Number(coins);
+        if (Number.isFinite(amount) && amount > 0) giftCoinsByViewer.set(key, amount);
+      }
       for (const viewer of snapshot.activeViewers ?? []) {
         if (people.has(viewer.userKey)) continue;
         const person = spawn({ eventId: 'restore:' + viewer.userKey, eventType: 'viewer.join', source: 'tiktok', user: { id: viewer.userKey, nickname: viewer.nickname ?? 'Phật tử', avatarUrl: viewer.avatarUrl ?? undefined }, payload: {} });
@@ -527,7 +556,8 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     };
   }, [id]);
 
-  return <main style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#18120d' }}>
+  return <main style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#18120d', display: 'grid', placeItems: 'center' }}>
+    <div className={styles.frame}>
     <div ref={holder} style={{ width: '100%', height: '100%' }} />
     <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
       {badges.map(badge => <BuddhistUserBadge key={badge.key} username={badge.name} avatarUrl={badge.avatarUrl} vip={badge.vip} elementRef={node => { if (node) badgeRefs.current.set(badge.key, node); else badgeRefs.current.delete(badge.key); }} />)}
@@ -535,6 +565,10 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     {prayers.map(prayer => <div key={prayer.id} className={styles.prayer} style={{ top: `${prayer.top}%`, animationDuration: `${prayer.duration}s` }} onAnimationEnd={() => setPrayers(current => current.filter(item => item.id !== prayer.id))}>
       <span className={styles.prayerAvatar}>☸{prayer.avatarUrl && <img src={prayer.avatarUrl} alt="" referrerPolicy="no-referrer" onError={event => event.currentTarget.remove()} />}</span>
       <strong>{prayer.name}</strong><span>{prayer.text}</span>
+    </div>)}
+    {fallingGifts.map(gift => <div key={gift.id} className={styles.fallingGift} style={{ left: `${gift.left}%`, top: `${gift.top}%`, width: `${gift.size / WIDTH * 100}%`, animationDuration: `${gift.duration}s` }} onAnimationEnd={() => setFallingGifts(current => current.filter(item => item.id !== gift.id))}>
+      {gift.imageUrl ? <img src={gift.imageUrl} alt={gift.name} referrerPolicy="no-referrer" onError={event => { event.currentTarget.style.display = 'none'; event.currentTarget.nextElementSibling?.classList.add(styles.giftFallbackVisible); }} /> : null}
+      <span className={gift.imageUrl ? styles.giftFallback : styles.giftFallbackVisible}>{gift.name}</span>
     </div>)}
     {status && <div style={{ position: 'absolute', top: 20, left: 20, padding: 10, background: '#1b140dcc', borderRadius: 10, color: '#fff' }}>{status}</div>}
     <div style={{ position: 'absolute', top: '11%', right: '2%', width: '31%', padding: '1.2%', background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', boxSizing: 'border-box', textAlign: 'center', fontSize: '.85em' }}>
@@ -544,5 +578,6 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     <MusicPlayer key={musicUrl} url={musicUrl} volume={previewMuted || !livePlaying ? 0 : musicVolume} playing={livePlaying && !previewMuted} playerRef={musicPlayer} />
     {speech && <div style={{ position: 'absolute', bottom: 50, left: '10%', right: '10%', padding: 20, background: '#241a12dd', color: '#fff', textAlign: 'center', borderRadius: 18 }}>{speech}</div>}
     {voiceEnabled && !previewMuted && (!voiceReady || voiceBlocked) && <button style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 10 }} onClick={() => unlockVoiceRef.current?.()}>Bật giọng AI</button>}
+    </div>
   </main>;
 }

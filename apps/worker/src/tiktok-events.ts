@@ -43,14 +43,25 @@ export function normalizeTikTokComment(raw: Record<string, unknown>): string {
 export function normalizeTikTokGift(raw: Record<string, unknown>) {
   const details = asRecord(raw.giftDetails);
   const legacy = asRecord(raw.gift);
+  const extended = asRecord(raw.extendedGiftInfo);
+  const imageUrls = [
+    ...[asRecord(details.giftImage).url, asRecord(legacy.giftImage).url, asRecord(extended.image).url]
+      .flatMap(value => Array.isArray(value) ? value : []),
+    raw.giftPictureUrl, extended.imageUrl,
+  ];
+  const giftImageUrl = imageUrls.find(value => {
+    if (typeof value !== 'string') return false;
+    try { return new URL(value).protocol === 'https:'; } catch { return false; }
+  }) as string | undefined;
   const giftType = asNumber(details.giftType) ?? asNumber(legacy.giftType) ?? asNumber(raw.giftType);
   return {
     giftId: String(raw.giftId ?? ''),
     giftName: asString(details.giftName) ?? asString(legacy.name) ?? asString(raw.giftName) ?? 'Gift',
+    giftImageUrl,
     quantity: asNumber(raw.repeatCount) ?? 1,
     comboId: asString(raw.groupId) ?? asString(raw.comboId),
     repeatCount: asNumber(raw.repeatCount),
     repeatEnd: giftType !== 1 || raw.repeatEnd === 1 || raw.repeatEnd === true,
-    estimatedCoins: asNumber(details.diamondCount) ?? asNumber(legacy.diamondCount) ?? asNumber(raw.diamondCount),
+    estimatedCoins: asNumber(details.diamondCount) ?? asNumber(legacy.diamondCount) ?? asNumber(extended.diamondCount) ?? asNumber(raw.diamondCount),
   };
 }

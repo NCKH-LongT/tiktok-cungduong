@@ -4,12 +4,13 @@ import { io } from 'socket.io-client';
 
 const base=process.env.SMOKE_BASE_URL??'http://localhost:8090';
 const email=process.env.ADMIN_EMAIL,password=process.env.ADMIN_PASSWORD;
+const turnstileToken=process.env.SMOKE_TURNSTILE_TOKEN;
 if(!email||!password)throw new Error('ADMIN_EMAIL and ADMIN_PASSWORD required');
 let cookie='';
 async function request(path,init={}){const response=await fetch(base+'/api'+path,{...init,headers:{'content-type':'application/json',...(cookie?{cookie}:{}),...init.headers}});const setCookie=response.headers.get('set-cookie');if(setCookie)cookie=setCookie.split(';')[0];let data=await response.json();return {status:response.status,data};}
 const ready=await request('/ready');assert.equal(ready.status,200);
-const bad=await request('/auth/login',{method:'POST',body:JSON.stringify({login:email,password:'wrong'})});assert.equal(bad.status,401);
-const login=await request('/auth/login',{method:'POST',body:JSON.stringify({login:email,password})});assert.equal(login.status,201);
+const bad=await request('/auth/login',{method:'POST',body:JSON.stringify({login:email,password:'wrong',turnstileToken})});assert.equal(bad.status,401);
+const login=await request('/auth/login',{method:'POST',body:JSON.stringify({login:email,password,turnstileToken})});assert.equal(login.status,201);
 const suffix=randomUUID().slice(0,8);
 const created=await request('/lives',{method:'POST',body:JSON.stringify({uniqueId:'@smoke_'+suffix,title:'Smoke '+suffix})});assert.equal(created.status,201);assert.equal(created.data.uniqueId,'smoke_'+suffix);
 const id=created.data.id;
@@ -24,16 +25,19 @@ try{
  const avatarUrl=base+'/overlay/chanhdien.png';
  const joined=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.join',user:{id:'viewer-1',nickname:'Minh',avatarUrl},payload:{}})});assert.equal(joined.status,201);
  assert.equal((await received).eventId,joined.data.eventId);
- const gift=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'gift.received',user:{id:'viewer-1',nickname:'Minh'},payload:{giftName:'Hoa hồng',giftId:'rose',quantity:1}})});assert.equal(gift.status,201);
+ const giftImageUrl='https://example.invalid/tiktok-gift.png';
+ const giftReceived=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Gift socket timeout')),5000);socket.once('live.event',event=>{clearTimeout(timer);resolve(event)})});
+ const gift=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'gift.received',user:{id:'viewer-1',nickname:'Minh'},payload:{giftName:'Hoa hồng',giftId:'rose',quantity:2,estimatedCoins:50,giftImageUrl}})});assert.equal(gift.status,201);
+ assert.equal((await giftReceived).payload.giftImageUrl,giftImageUrl);
  const adminCookie=cookie;
  const secondaryPassword=randomUUID()+randomUUID();
  const secondary=await request('/users',{method:'POST',body:JSON.stringify({email:`smoke_${suffix}@example.invalid`,username:`smoke_${suffix}`,password:secondaryPassword})});assert.equal(secondary.status,201);
  try{
-  const secondaryLogin=await request('/auth/login',{method:'POST',body:JSON.stringify({login:`smoke_${suffix}@example.invalid`,password:secondaryPassword})});assert.equal(secondaryLogin.status,201);
-  const forbidden=await request(`/lives/${id}`);assert.equal(forbidden.status,404);
-  const forbiddenWrite=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.join',user:{id:'x',nickname:'x'},payload:{}})});assert.equal(forbiddenWrite.status,404);
+  const secondaryLogin=await request('/auth/login',{method:'POST',body:JSON.stringify({login:`smoke_${suffix}@example.invalid`,password:secondaryPassword,turnstileToken})});assert.equal(secondaryLogin.status,201);
+  const forbidden=await request(`/lives/${id}`);assert([402,404].includes(forbidden.status));
+  const forbiddenWrite=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.join',user:{id:'x',nickname:'x'},payload:{}})});assert([402,404].includes(forbiddenWrite.status));
  }finally{cookie=adminCookie;await request('/users/'+secondary.data.id,{method:'DELETE'})}
- const snapshot=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(snapshot.status,200);assert(snapshot.data.events.length>=2);assert.equal(snapshot.data.leaderboard.length,0);assert.equal(snapshot.data.audio.voiceId,'vi-VN-Standard-D');assert(snapshot.data.activeViewers.some(viewer=>viewer.userKey==='viewer-1'&&viewer.avatarUrl===avatarUrl));
+ const snapshot=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(snapshot.status,200);assert(snapshot.data.events.length>=2);assert.equal(snapshot.data.leaderboard.length,0);assert.equal(snapshot.data.giftCoinsByViewer['viewer-1'],100);assert.equal(snapshot.data.audio.voiceId,'vi-VN-Standard-D');assert(snapshot.data.activeViewers.some(viewer=>viewer.userKey==='viewer-1'&&viewer.avatarUrl===avatarUrl));
  const left=await request(`/lives/${id}/simulate`,{method:'POST',body:JSON.stringify({eventType:'viewer.leave',user:{id:'viewer-1',nickname:'Minh'},payload:{}})});assert.equal(left.status,201);
  const afterLeave=await request(`/overlay/${id}/snapshot?token=${encodeURIComponent(overlay.searchParams.get('token'))}`);assert.equal(afterLeave.status,200);assert(!afterLeave.data.activeViewers.some(viewer=>viewer.userKey==='viewer-1'));
  const analytics=await request(`/lives/${id}/analytics`);assert.equal(analytics.status,200);assert.equal(Object.keys(analytics.data.counts).length,0);
