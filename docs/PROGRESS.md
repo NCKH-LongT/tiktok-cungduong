@@ -1,5 +1,9 @@
 # Progress and acceptance status
 
+## Battle Arena handoff, 2026-11-02
+
+Battle được phát triển riêng trên `feature/battle-arena` và PR nháp #1; `main` vẫn là Farm Công Đức. Quy trình cắt sprite tự động, Studio, Simulator và Battle OBS preview đã có. Hai nhân vật mẫu vẫn `NEEDS_REVIEW` (17 và 21 cảnh báo Validate), nên Battle chưa liệt kê nhân vật; phải kiểm tra frame, lưu nháp, Validate, Approve rồi Publish. LIVE binding/OBS token đã được thử qua API Docker, nhưng Battle Engine tính HP/damage và kiểm tra TikTok thật/OBS thật còn thiếu. Xem [BATTLE_ASSETS.md](./BATTLE_ASSETS.md#bàn-giao-để-tiếp-tục-sau-2026-11-02) để tiếp tục. Không gộp Battle vào `main` khi quay lại sửa Farm.
+
 This repository is a working foundation and simulator vertical slice, **not a completed 26-point MVP**.
 
 | Area | State | Evidence / gap |
