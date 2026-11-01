@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 
 type Box = { x: number; y: number; width: number; height: number };
 type Frame = {
@@ -153,6 +159,7 @@ export default function BattleAssetsPage() {
     null,
   );
   const [selectedFrame, setSelectedFrame] = useState("");
+  const [mergeTarget, setMergeTarget] = useState("");
   const [animationName, setAnimationName] = useState("idle");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -295,6 +302,48 @@ export default function BattleAssetsPage() {
       },
     });
   }
+  function dragProperty(
+    event: ReactPointerEvent<HTMLSpanElement>,
+    key: "pivot" | "hitbox" | "hurtbox",
+  ) {
+    if (!frame || !sprite) return;
+    const old = deep(frame);
+    const startX = event.clientX,
+      startY = event.clientY,
+      target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    target.onpointermove = (move) => {
+      const dx = ((move.clientX - startX) * sprite.canvas.width) / 240;
+      const dy = ((move.clientY - startY) * sprite.canvas.height) / 240;
+      if (key === "pivot")
+        editFrame({
+          ...old,
+          pivot: {
+            x: Math.max(0, Math.min(1, old.pivot.x + dx / sprite.canvas.width)),
+            y: Math.max(
+              0,
+              Math.min(1, old.pivot.y + dy / sprite.canvas.height),
+            ),
+          },
+        });
+      else {
+        const box = old[key];
+        if (box)
+          editFrame({
+            ...old,
+            [key]: {
+              ...box,
+              x: Math.round(box.x + dx),
+              y: Math.round(box.y + dy),
+            },
+          });
+      }
+    };
+    target.onpointerup = () => {
+      target.onpointermove = null;
+      target.onpointerup = null;
+    };
+  }
   function paintMask(clientX: number, clientY: number) {
     if (!frame || !selected || maskMode === "move" || !imageRef.current) return;
     const rect = imageRef.current.getBoundingClientRect();
@@ -333,6 +382,61 @@ export default function BattleAssetsPage() {
       frames[index],
     ];
     change({ ...sprite, frames });
+  }
+  function splitFrame(axis: "x" | "y") {
+    if (!sprite || !frame || frame.crop[axis === "x" ? "width" : "height"] < 2)
+      return;
+    const first = deep(frame),
+      second = deep(frame),
+      sizeKey = axis === "x" ? "width" : "height",
+      firstSize = Math.floor(frame.crop[sizeKey] / 2);
+    first.crop[sizeKey] = firstSize;
+    second.crop[axis] += firstSize;
+    second.crop[sizeKey] -= firstSize;
+    second.id = `${frame.id}_${Date.now().toString(36)}`;
+    change({
+      ...sprite,
+      frames: sprite.frames.flatMap((item) =>
+        item.id === frame.id ? [first, second] : [item],
+      ),
+    });
+  }
+  function mergeFrames() {
+    if (!sprite || !frame || !mergeTarget || mergeTarget === frame.id) return;
+    const other = sprite.frames.find((item) => item.id === mergeTarget);
+    if (!other) return;
+    const x = Math.min(frame.crop.x, other.crop.x),
+      y = Math.min(frame.crop.y, other.crop.y),
+      right = Math.max(
+        frame.crop.x + frame.crop.width,
+        other.crop.x + other.crop.width,
+      ),
+      bottom = Math.max(
+        frame.crop.y + frame.crop.height,
+        other.crop.y + other.crop.height,
+      );
+    change({
+      ...sprite,
+      frames: sprite.frames
+        .filter((item) => item.id !== other.id)
+        .map((item) =>
+          item.id === frame.id
+            ? { ...item, crop: { x, y, width: right - x, height: bottom - y } }
+            : item,
+        ),
+      animations: Object.fromEntries(
+        Object.entries(sprite.animations).map(([name, animation]) => [
+          name,
+          {
+            ...animation,
+            frames: animation.frames.map((item) =>
+              item.frameId === other.id ? { ...item, frameId: frame.id } : item,
+            ),
+          },
+        ]),
+      ),
+    });
+    setMergeTarget("");
   }
   function editAnimation(next: Animation) {
     if (!sprite) return;
@@ -750,11 +854,29 @@ export default function BattleAssetsPage() {
                 <div
                   key={f.id}
                   className="row"
+                  draggable
+                  onDragStart={(event) =>
+                    event.dataTransfer.setData("text/plain", f.id)
+                  }
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const from = event.dataTransfer.getData("text/plain");
+                    const oldIndex = sprite.frames.findIndex(
+                      (item) => item.id === from,
+                    );
+                    if (oldIndex < 0 || oldIndex === i) return;
+                    const reordered = [...sprite.frames];
+                    const [moving] = reordered.splice(oldIndex, 1);
+                    reordered.splice(i, 0, moving);
+                    change({ ...sprite, frames: reordered });
+                  }}
                   style={{
                     padding: 5,
                     background: f.id === selectedFrame ? "#725b34" : undefined,
                   }}
                 >
+                  <span aria-hidden="true">☰</span>
                   <button onClick={() => setSelectedFrame(f.id)}>{f.id}</button>
                   <button onClick={() => moveFrame(i, -1)} aria-label="Lên">
                     ↑
@@ -847,7 +969,67 @@ export default function BattleAssetsPage() {
                       cursor: "move",
                       touchAction: "none",
                     }}
-                  />
+                  >
+                    <span
+                      aria-label="Resize crop"
+                      onPointerDown={(event) => {
+                        event.stopPropagation();
+                        const startX = event.clientX,
+                          startY = event.clientY,
+                          old = deep(frame),
+                          target = event.currentTarget;
+                        target.setPointerCapture(event.pointerId);
+                        target.onpointermove = (move) => {
+                          const rect =
+                            imageRef.current?.getBoundingClientRect();
+                          if (!rect) return;
+                          editFrame({
+                            ...old,
+                            crop: {
+                              ...old.crop,
+                              width: Math.round(
+                                Math.max(
+                                  1,
+                                  Math.min(
+                                    selected.width - old.crop.x,
+                                    old.crop.width +
+                                      ((move.clientX - startX) *
+                                        selected.width) /
+                                        rect.width,
+                                  ),
+                                ),
+                              ),
+                              height: Math.round(
+                                Math.max(
+                                  1,
+                                  Math.min(
+                                    selected.height - old.crop.y,
+                                    old.crop.height +
+                                      ((move.clientY - startY) *
+                                        selected.height) /
+                                        rect.height,
+                                  ),
+                                ),
+                              ),
+                            },
+                          });
+                        };
+                        target.onpointerup = () => {
+                          target.onpointermove = null;
+                        };
+                      }}
+                      style={{
+                        position: "absolute",
+                        right: -6,
+                        bottom: -6,
+                        width: 12,
+                        height: 12,
+                        background: "#ff0",
+                        cursor: "nwse-resize",
+                        touchAction: "none",
+                      }}
+                    />
+                  </div>
                 )}
               </div>
             </div>
@@ -890,6 +1072,9 @@ export default function BattleAssetsPage() {
                       />
                       {showPivot && (
                         <span
+                          onPointerDown={(event) =>
+                            dragProperty(event, "pivot")
+                          }
                           style={{
                             position: "absolute",
                             left: `${frame.pivot.x * 100}%`,
@@ -897,6 +1082,8 @@ export default function BattleAssetsPage() {
                             color: "yellow",
                             fontSize: 25,
                             transform: "translate(-50%,-50%)",
+                            cursor: "move",
+                            touchAction: "none",
                           }}
                         >
                           +
@@ -909,6 +1096,12 @@ export default function BattleAssetsPage() {
                         enabled && b ? (
                           <span
                             key={i}
+                            onPointerDown={(event) =>
+                              dragProperty(
+                                event,
+                                i === 0 ? "hitbox" : "hurtbox",
+                              )
+                            }
                             style={{
                               position: "absolute",
                               left: `${((b as Box).x / sprite.canvas.width) * 100}%`,
@@ -916,6 +1109,8 @@ export default function BattleAssetsPage() {
                               width: `${((b as Box).width / sprite.canvas.width) * 100}%`,
                               height: `${((b as Box).height / sprite.canvas.height) * 100}%`,
                               border: `2px solid ${color}`,
+                              cursor: "move",
+                              touchAction: "none",
                             }}
                           />
                         ) : null,
@@ -1034,6 +1229,27 @@ export default function BattleAssetsPage() {
                     }}
                   >
                     Nhân bản
+                  </button>
+                  <button onClick={() => splitFrame("x")}>Tách dọc</button>
+                  <button onClick={() => splitFrame("y")}>Tách ngang</button>
+                  <label>
+                    Gộp với frame
+                    <select
+                      value={mergeTarget}
+                      onChange={(event) => setMergeTarget(event.target.value)}
+                    >
+                      <option value="">Chọn…</option>
+                      {sprite.frames
+                        .filter((item) => item.id !== frame.id)
+                        .map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.id}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <button disabled={!mergeTarget} onClick={mergeFrames}>
+                    Gộp
                   </button>
                   <button
                     onClick={() => {
@@ -1157,7 +1373,22 @@ export default function BattleAssetsPage() {
               </select>
             </label>
             {!anim && (
-              <button onClick={() => editAnimation(blankAnimation())}>
+              <button
+                onClick={() =>
+                  editAnimation({
+                    ...blankAnimation(),
+                    direction: animationName.endsWith("_left")
+                      ? "left"
+                      : animationName.endsWith("_right")
+                        ? "right"
+                        : "none",
+                    loop: !["attack", "fall", "die", "hit"].includes(
+                      animationName,
+                    ),
+                    holdLastFrame: animationName === "die",
+                  })
+                }
+              >
                 Tạo animation
               </button>
             )}
@@ -1233,6 +1464,40 @@ export default function BattleAssetsPage() {
                     <option>left</option>
                     <option>right</option>
                   </select>
+                </label>
+                {(["x", "y"] as const).map((axis) => (
+                  <label key={axis}>
+                    Root motion {axis}
+                    <input
+                      type="number"
+                      step="1"
+                      value={anim.rootMotion[axis]}
+                      onChange={(event) =>
+                        editAnimation({
+                          ...anim,
+                          rootMotion: {
+                            ...anim.rootMotion,
+                            [axis]: Number(event.target.value),
+                          },
+                        })
+                      }
+                    />
+                  </label>
+                ))}
+                <label>
+                  Chuyển tiếp (ngăn bằng dấu phẩy)
+                  <input
+                    value={anim.transitions.join(",")}
+                    onChange={(event) =>
+                      editAnimation({
+                        ...anim,
+                        transitions: event.target.value
+                          .split(",")
+                          .map((value) => value.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                  />
                 </label>
               </div>
               <h3>Timeline</h3>

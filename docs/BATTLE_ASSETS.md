@@ -16,8 +16,8 @@ Mở `http://localhost:18091/admin/battle-assets`. Project Compose tên `tiktok-
 
 1. Admin (SUPER_ADMIN hoặc ADMIN có quyền `battle.assets.manage`; bootstrap cấp quyền này cho role ADMIN) upload background hoặc sprite PNG.
 2. Worker xác thực ảnh bằng Pillow, tạo thumbnail và đề xuất crop `UNCLASSIFIED`. Các đề xuất có thể lẫn nhãn, vũ khí hoặc hiệu ứng; sửa thủ công trong Frame Editor.
-3. Dùng crop, color key, erase/restore, padding và thuộc tính pivot/hitbox/hurtbox để tạo frame RGBA. Lưu bản nháp để worker xuất PNG, atlas và metadata trên volume.
-4. Gắn frame vào các animation, thời lượng từng frame và event. Mở Sprite Simulator kiểm tra hướng, combat minh họa, khung 9:16 và FPS.
+3. Dùng crop (kéo, resize, tách/gộp), color key, erase/restore, padding và thuộc tính pivot/hitbox/hurtbox (có thể kéo trong preview) để tạo frame RGBA. Lưu bản nháp để worker xuất PNG, atlas và metadata trên volume.
+4. Gắn frame vào các animation, thời lượng từng frame, root motion, transition và event. Mở Sprite Simulator kiểm tra hướng di chuyển theo `walk_left`/`walk_right`, combat minh họa, khung 9:16 và FPS đo được.
 5. Validate → Approve → Publish. Upload không tự publish. Phiên bản cũ vẫn có URL theo số version; rollback chỉ đổi con trỏ active.
 
 Mỗi asset có checksum SHA-256 bản gốc, atlas có checksum riêng. Các file gốc và version được lưu tại `BATTLE_ASSET_ROOT` (mặc định `/var/lib/cungduong/battle-assets`). Ảnh thật mẫu nằm trong `assets/battle/source/` để admin upload; không được xem là animation đã hoàn thiện.

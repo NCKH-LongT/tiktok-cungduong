@@ -6,6 +6,10 @@ import {
   BattlePreview,
   type BattleMetadata,
 } from "../../../../../../components/BattlePreview";
+import {
+  frameAt,
+  movementAnimation,
+} from "../../../../../../lib/battle-animation";
 
 type Version = {
   version: number;
@@ -13,28 +17,19 @@ type Version = {
   atlasKey: string | null;
   metadata: Record<string, unknown>;
 };
-type Asset = { id: string; name: string; kind: string; versions: Version[] };
+type Asset = {
+  id: string;
+  name: string;
+  kind: string;
+  versions: Version[];
+  background?: { isActive: boolean } | null;
+};
 type Mode = "single" | "direction" | "combat" | "obs" | "stress";
-function frameAt(
-  meta: BattleMetadata,
-  animation: string,
-  time: number,
-  loop: boolean,
-  speed: number,
-) {
-  const data = meta.animations[animation];
-  if (!data?.frames?.length) return Object.keys(meta.frames)[0] ?? "";
-  const total = data.frames.reduce((n, f) => n + f.durationMs, 0);
-  let cursor =
-    loop && total
-      ? (time * speed) % total
-      : Math.min(time * speed, Math.max(0, total - 1));
-  for (const f of data.frames) {
-    if (cursor < f.durationMs) return f.frameId;
-    cursor -= f.durationMs;
-  }
-  return data.frames.at(-1)?.frameId ?? "";
-}
+const elementOf = (asset?: Asset | null) =>
+  (
+    (asset?.versions[0]?.metadata as { character?: { element?: string } })
+      ?.character?.element ?? ""
+  ).toLowerCase();
 export default function Simulator() {
   const { characterId } = useParams<{ characterId: string }>();
   const [asset, setAsset] = useState<Asset | null>(null),
@@ -57,6 +52,9 @@ export default function Simulator() {
     [ground, setGround] = useState(true),
     [x, setX] = useState(270),
     [anchorY, setAnchorY] = useState(730),
+    [nickname, setNickname] = useState("Phật tử thử nghiệm"),
+    [avatarUrl, setAvatarUrl] = useState(""),
+    [fps, setFps] = useState(0),
     [error, setError] = useState("");
   useEffect(() => {
     void (async () => {
@@ -69,6 +67,21 @@ export default function Simulator() {
         ]);
         setAsset(a);
         setOthers(list);
+        setOpponent(
+          (current) =>
+            current ||
+            list.find(
+              (item) =>
+                item.kind === "SPRITE" &&
+                item.id !== a.id &&
+                item.versions[0]?.atlasKey,
+            )?.id ||
+            "",
+        );
+        setBackground(
+          (current) =>
+            current || list.find((item) => item.background?.isActive)?.id || "",
+        );
         const v = a.versions[0];
         if (v?.atlasKey) {
           const r = await fetch(
@@ -99,17 +112,35 @@ export default function Simulator() {
   useEffect(() => {
     if (!playing) return;
     let last = performance.now();
+    let frames = 0;
+    let measuredAt = last;
     const id = window.setInterval(() => {
       const now = performance.now();
       setElapsed((t) => t + (now - last));
+      frames++;
+      if (now - measuredAt >= 1000) {
+        setFps(Math.round((frames * 1000) / (now - measuredAt)));
+        frames = 0;
+        measuredAt = now;
+      }
       last = now;
     }, 33);
-    return () => window.clearInterval(id);
+    return () => {
+      window.clearInterval(id);
+      setFps(0);
+    };
   }, [playing]);
   const activeVersion = asset?.versions[0];
   const opponentAsset = others.find((x) => x.id === opponent);
   const opponentVersion = opponentAsset?.versions[0];
-  const frame = meta ? frameAt(meta, animation, elapsed, loop, speed) : "";
+  const directionalAnimation = movementAnimation(elapsed);
+  const activeAnimation =
+    mode === "direction" && meta?.animations[directionalAnimation]
+      ? directionalAnimation
+      : animation;
+  const frame = meta
+    ? frameAt(meta, activeAnimation, elapsed, loop, speed)
+    : "";
   const phase = elapsed % 5000;
   const directionX =
     mode === "direction"
@@ -121,24 +152,33 @@ export default function Simulator() {
     mode === "combat"
       ? phase < 1500
         ? "walk_right"
-        : phase < 2800
+        : phase < 2500
           ? "attack"
-          : phase < 3400
-            ? "hit"
-            : phase < 3900
-              ? "fall"
-              : "die"
-      : animation;
+          : "idle"
+      : activeAnimation;
   const characters = useMemo(() => {
     if (!meta || !asset || !activeVersion) return [];
+    const combatFrame = (metadata: BattleMetadata, name: string) =>
+      frameAt(
+        metadata,
+        name,
+        elapsed,
+        metadata.animations[name]?.loop ?? false,
+        speed,
+      );
     const primary = {
       atlasUrl: `/api/battle-assets/${asset.id}/file/atlas.png?version=${activeVersion.version}`,
       metadata: meta,
-      frameId: frameAt(meta, combatAnimation, elapsed, loop, speed),
+      frameId:
+        mode === "combat"
+          ? combatFrame(meta, combatAnimation)
+          : frameAt(meta, combatAnimation, elapsed, loop, speed),
       x: directionX,
       y: anchorY,
       scale: 0.55,
       flipX: flip,
+      label: nickname || asset.name,
+      avatarUrl: avatarUrl.startsWith("https://") ? avatarUrl : undefined,
     };
     if (mode === "stress")
       return Array.from({ length: 12 }, (_, i) => ({
@@ -147,33 +187,56 @@ export default function Simulator() {
         y: 400 + Math.floor(i / 4) * 180,
         scale: 0.22,
       }));
-    if (mode === "combat" && opponentMeta && opponentAsset && opponentVersion)
-      return [
-        primary,
-        {
-          atlasUrl: `/api/battle-assets/${opponentAsset.id}/file/atlas.png?version=${opponentVersion.version}`,
-          metadata: opponentMeta,
-          frameId: frameAt(
-            opponentMeta,
+    if (mode === "combat" && opponentMeta && opponentAsset && opponentVersion) {
+      const blue = {
+        atlasUrl: `/api/battle-assets/${opponentAsset.id}/file/atlas.png?version=${opponentVersion.version}`,
+        metadata: opponentMeta,
+        frameId: combatFrame(
+          opponentMeta,
+          phase < 1500
+            ? "walk_left"
+            : phase < 2500
+              ? "idle"
+              : phase < 3300
+                ? "hit"
+                : phase < 3900
+                  ? "fall"
+                  : "die",
+        ),
+        x: 430 - Math.min(140, phase / 10) + (phase > 2500 ? 30 : 0),
+        y: anchorY,
+        scale: 0.55,
+        flipX: true,
+        label: opponentAsset.name,
+      };
+      if (elementOf(asset) === "ice" && elementOf(opponentAsset) === "fire") {
+        const red = {
+          ...blue,
+          frameId: combatFrame(opponentMeta, combatAnimation),
+          x: 110 + Math.min(140, phase / 10),
+          flipX: false,
+        };
+        const ice = {
+          ...primary,
+          frameId: combatFrame(
+            meta,
             phase < 1500
               ? "walk_left"
-              : phase < 2800
+              : phase < 2500
                 ? "idle"
-                : phase < 3400
+                : phase < 3300
                   ? "hit"
                   : phase < 3900
                     ? "fall"
                     : "die",
-            elapsed,
-            loop,
-            speed,
           ),
-          x: 430 - Math.min(140, phase / 10),
-          y: anchorY,
-          scale: 0.55,
+          x: 430 - Math.min(140, phase / 10) + (phase > 2500 ? 30 : 0),
           flipX: true,
-        },
-      ];
+        };
+        return [red, ice];
+      }
+      return [primary, blue];
+    }
     return [primary];
   }, [
     meta,
@@ -191,8 +254,10 @@ export default function Simulator() {
     opponentAsset,
     opponentVersion,
     phase,
+    nickname,
+    avatarUrl,
   ]);
-  const frames = meta?.animations[animation]?.frames ?? [];
+  const frames = meta?.animations[activeAnimation]?.frames ?? [];
   const currentIndex = frames.findIndex((f) => f.frameId === frame);
   function step(delta: number) {
     if (!frames.length) return;
@@ -235,6 +300,7 @@ export default function Simulator() {
               value={animation}
               onChange={(e) => {
                 setAnimation(e.target.value);
+                setLoop(meta?.animations[e.target.value]?.loop ?? true);
                 setElapsed(0);
               }}
             >
@@ -317,6 +383,22 @@ export default function Simulator() {
               onChange={(e) => setAnchorY(Number(e.target.value))}
             />
           </label>
+          <label>
+            Tên TikTok thử nghiệm
+            <input
+              value={nickname}
+              onChange={(event) => setNickname(event.target.value)}
+            />
+          </label>
+          <label>
+            Avatar HTTPS thử nghiệm
+            <input
+              type="url"
+              value={avatarUrl}
+              onChange={(event) => setAvatarUrl(event.target.value)}
+              placeholder="https://..."
+            />
+          </label>
           {(["flip", "pivot", "hitbox", "hurtbox", "ground"] as const).map(
             (key) => (
               <label key={key}>
@@ -381,8 +463,19 @@ export default function Simulator() {
             </label>
           )}
           <p>
-            Frame: {frame || "—"} · FPS preview: {playing ? 30 : 0}
+            Frame: {frame || "—"} · FPS preview: {fps}
           </p>
+          {mode === "combat" &&
+            (!opponentMeta ||
+              ![elementOf(asset), elementOf(opponentAsset)].includes("fire") ||
+              ![elementOf(asset), elementOf(opponentAsset)].includes(
+                "ice",
+              )) && (
+              <p className="error">
+                Cần hai atlas đã xử lý và gán đúng hệ fire/ice để kiểm tra đỏ
+                bên trái, xanh bên phải.
+              </p>
+            )}
           <p className="muted">
             Combat ở đây chỉ là minh họa hoạt hình; HP và damage thực tế phải do
             Battle Engine backend xác nhận.
@@ -404,11 +497,11 @@ export default function Simulator() {
               groundY={anchorY}
               zoom={zoom}
             />
-            {mode === "obs" && (
+            {(mode === "obs" || mode === "combat") && (
               <div
                 style={{
                   position: "absolute",
-                  top: 20,
+                  top: 12,
                   left: 20,
                   right: 20,
                   display: "flex",
@@ -417,8 +510,31 @@ export default function Simulator() {
                   textShadow: "0 2px 2px #000",
                 }}
               >
-                <span>🟥 HP 100/100</span>
-                <span>🟦 HP 100/100</span>
+                <div style={{ width: "42%" }}>
+                  <span>🟥 {characters[0]?.label ?? "Fire"}</span>
+                  <div style={{ height: 10, background: "#341515" }}>
+                    <div
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        background: "#f44336",
+                      }}
+                    />
+                  </div>
+                </div>
+                <div style={{ width: "42%", textAlign: "right" }}>
+                  <span>🟦 {characters[1]?.label ?? "Ice"}</span>
+                  <div style={{ height: 10, background: "#172c38" }}>
+                    <div
+                      style={{
+                        width: `${mode === "combat" && phase > 3900 ? 0 : mode === "combat" && phase > 2500 ? 35 : 100}%`,
+                        height: "100%",
+                        background: "#38bdf8",
+                        marginLeft: "auto",
+                      }}
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </div>
