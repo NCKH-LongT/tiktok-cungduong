@@ -1,4 +1,6 @@
 import json
+import importlib.util
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -7,6 +9,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 SCRIPT = Path(__file__).with_name('processor.py')
+SOURCE = Path(__file__).resolve().parents[2] / 'assets' / 'battle' / 'source'
 
 
 class ProcessorTests(unittest.TestCase):
@@ -75,6 +78,32 @@ class ProcessorTests(unittest.TestCase):
         config = self.root / 'draft.json'
         config.write_text(json.dumps({'frames': [{'id': 'bad', 'crop': {'x': 170, 'y': 0, 'width': 50, 'height': 50}}]}))
         self.assertIn('INVALID_FRAME_RECTANGLE', self.run_processor('render', source, config).stderr)
+
+    @unittest.skipUnless(importlib.util.find_spec('cv2') and importlib.util.find_spec('numpy'), 'OpenCV environment required')
+    def test_real_sheets_generate_editable_animation_drafts_without_overwriting_source(self):
+        for filename, expected in [('tutien1.png', 84), ('tutien2.png', 94)]:
+            with self.subTest(filename=filename):
+                source = SOURCE / filename
+                checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+                output = self.root / filename
+                result = subprocess.run([sys.executable, str(SCRIPT), 'auto', str(source), '-', str(output)],
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                draft = json.loads((output / 'draft.json').read_text())
+                quality = json.loads((output / 'quality.json').read_text())
+                self.assertEqual(len(draft['frames']), expected)
+                self.assertEqual(len(draft['animations']), 15)
+                self.assertTrue(all(item['status'] != 'FAIL' for item in quality))
+                self.assertTrue(any(item['status'] == 'REVIEW_REQUIRED' for item in quality))
+                self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), checksum)
+                self.assertTrue((output / 'atlas.png').is_file())
+                self.assertTrue((output / 'atlas.json').is_file())
+                self.assertTrue((output / 'preview.html').is_file())
+                self.assertEqual(Image.open(output / 'atlas.png').getextrema()[3][0], 0)
+                self.assertIn('idle', json.loads((output / 'animations.json').read_text()))
+                rerun = subprocess.run([sys.executable, str(SCRIPT), 'auto', str(source), '-', str(output)],
+                                       capture_output=True, text=True, timeout=10)
+                self.assertIn('OUTPUT_NOT_EMPTY', rerun.stderr)
 
 
 if __name__ == '__main__':

@@ -2,10 +2,12 @@
 """Isolated Pillow processor for Battle Arena uploads and approved drafts."""
 import json
 import math
+import shutil
 import statistics
 import sys
 from pathlib import Path
 from PIL import Image, ImageChops, ImageFilter, ImageOps, UnidentifiedImageError
+from auto_extract import alpha_from_background, estimate_background, propose
 
 Image.MAX_IMAGE_PIXELS = 20_000_000
 MAX_BYTES = 12 * 1024 * 1024
@@ -77,10 +79,13 @@ def inspect(source_path, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     thumb = ImageOps.contain(image, (640, 640))
     thumb.save(output_dir / 'thumbnail.png')
-    candidates = detect_regions(image) if image_format == 'PNG' else []
-    if image_format == 'PNG' and len(candidates) < 2:
+    automatic = propose(source_path, image) if image_format == 'PNG' else None
+    candidates = automatic['candidates'] if automatic else detect_regions(image) if image_format == 'PNG' else []
+    if image_format == 'PNG' and not automatic and len(candidates) < 2:
         candidates = detect_regions(image, color_fallback=True)
-    report = {'format': image_format, 'width': image.width, 'height': image.height, 'hasAlpha': image.getextrema()[3][0] < 255, 'candidates': candidates, 'warnings': ['Frame regions are proposals; review labels, weapons, effects and overlaps before approval.'] if candidates else ['No automatic frame candidates; add crops manually.']}
+    report = {'format': image_format, 'width': image.width, 'height': image.height, 'hasAlpha': image.getextrema()[3][0] < 255, 'candidates': candidates, 'warnings': automatic['warnings'] if automatic else ['Frame regions are proposals; review labels, weapons, effects and overlaps before approval.'] if candidates else ['No automatic frame candidates; add crops manually.']}
+    if automatic:
+        report.update({'profile': automatic['profile'], 'draft': automatic['draft'], 'quality': automatic['quality']})
     (output_dir / 'report.json').write_text(json.dumps(report, ensure_ascii=False), encoding='utf8')
     return report
 
@@ -92,8 +97,26 @@ def rectangle(value, width, height):
     return x, y, w, h
 
 
-def transparent_crop(image, mask_options):
+def transparent_crop(image, mask_options, source=None, crop_box=None, background=None):
     if not mask_options or not mask_options.get('enabled', True):
+        return image
+    if mask_options.get('auto'):
+        if source is None or crop_box is None or background is None:
+            raise ValueError('AUTO_MASK_REQUIRES_SOURCE')
+        strip = mask_options.get('strip')
+        if not isinstance(strip, list) or len(strip) != 4:
+            raise ValueError('INVALID_AUTO_MASK_STRIP')
+        alpha = alpha_from_background(source, crop_box, background)
+        for stroke in mask_options.get('strokes', [])[:500]:
+            from PIL import ImageDraw
+            px, py = int(stroke.get('x', 0)), int(stroke.get('y', 0))
+            radius = max(1, min(100, int(stroke.get('radius', 8))))
+            ImageDraw.Draw(alpha).ellipse((px-radius, py-radius, px+radius, py+radius),
+                                          fill=255 if stroke.get('mode') == 'restore' else 0)
+        feather = max(0, min(5, float(mask_options.get('feather', 0))))
+        if feather:
+            alpha = alpha.filter(ImageFilter.GaussianBlur(feather))
+        image.putalpha(alpha)
         return image
     threshold = max(0, min(255, int(mask_options.get('threshold', 35))))
     pixels = image.load()
@@ -154,18 +177,28 @@ def render(source_path, draft_path, output_dir):
     x = y = row_height = 0
     rendered = []
     positions = {}
+    quality = []
+    background = estimate_background(image) if any(f.get('mask', {}).get('auto') for f in frames) else None
     for index, frame in enumerate(frames):
         frame_id = str(frame.get('id', f'frame_{index + 1:03d}'))
         if not frame_id.replace('_', '').replace('-', '').isalnum() or len(frame_id) > 60 or frame_id in positions:
             raise ValueError('INVALID_FRAME_ID')
         crop_box = frame.get('crop', frame)
         bx, by, bw, bh = rectangle(crop_box, image.width, image.height)
-        crop = transparent_crop(image.crop((bx, by, bx + bw, by + bh)), frame.get('mask', {}))
+        crop = transparent_crop(image.crop((bx, by, bx + bw, by + bh)), frame.get('mask', {}), image, (bx, by, bw, bh), background)
+        if frame.get('mask', {}).get('auto'):
+            bounds = crop.getbbox()
+            if bounds:
+                crop = crop.crop(bounds)
         padding = max(0, min(80, int(frame.get('padding', 20))))
-        scale = min((canvas_width - padding * 2) / bw, (canvas_height - padding * 2) / bh)
+        fit = min((canvas_width - padding * 2) / crop.width, (canvas_height - padding * 2) / crop.height)
+        source_scale = draft.get('sourceScale')
+        if source_scale is not None and not .1 <= float(source_scale) <= 8:
+            raise ValueError('INVALID_SOURCE_SCALE')
+        scale = min(fit, float(source_scale)) if source_scale is not None else fit
         if scale <= 0:
             raise ValueError('INVALID_PADDING')
-        resized = crop.resize((max(1, round(bw * scale)), max(1, round(bh * scale))), Image.Resampling.LANCZOS)
+        resized = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.Resampling.LANCZOS)
         normalized = Image.new('RGBA', (canvas_width, canvas_height))
         anchor_x = max(0, min(1, float(frame.get('footAnchor', {}).get('x', .5))))
         anchor_y = max(0, min(1, float(frame.get('footAnchor', {}).get('y', .9))))
@@ -173,6 +206,12 @@ def render(source_path, draft_path, output_dir):
         py = round(canvas_height * anchor_y - resized.height)
         normalized.alpha_composite(resized, (px, py))
         normalized.save(frame_dir / f'{frame_id}.png')
+        alpha_bounds = normalized.getbbox()
+        scaled_down = source_scale is not None and scale < float(source_scale) * .9
+        awaiting_review = frame.get('reviewRequired') and not frame.get('reviewed')
+        status = 'FAIL' if not alpha_bounds else 'REVIEW_REQUIRED' if scaled_down or awaiting_review else 'PASS'
+        quality.append({'frameId': frame_id, 'status': status,
+                        'reason': 'Empty foreground' if not alpha_bounds else 'Effect scaled to fit canvas' if scaled_down else 'Automatic crop needs visual review' if awaiting_review else ''})
         if x + canvas_width > atlas_width:
             x, y, row_height = 0, y + row_height, 0
         positions[frame_id] = {'x': x, 'y': y, 'width': canvas_width, 'height': canvas_height, 'pivot': frame.get('pivot', {'x': anchor_x, 'y': anchor_y}), 'hitbox': frame.get('hitbox'), 'hurtbox': frame.get('hurtbox'), 'collisionBox': frame.get('collisionBox'), 'headAnchor': frame.get('headAnchor', {'x': .5, 'y': .12})}
@@ -193,12 +232,60 @@ def render(source_path, draft_path, output_dir):
             raise ValueError(f'INVALID_ANIMATION:{name}')
     metadata = {'canvas': canvas, 'frames': positions, 'animations': animations, 'atlas': 'atlas.png'}
     (output_dir / 'metadata.json').write_text(json.dumps(metadata, ensure_ascii=False), encoding='utf8')
-    return {'frameCount': len(frames), 'animationCount': len(animations), 'atlasWidth': atlas_width, 'atlasHeight': atlas_height, 'warnings': ['Review transparency and frame boundaries visually before publishing.']}
+    phaser = {'frames': {key: {'frame': {'x': value['x'], 'y': value['y'], 'w': value['width'], 'h': value['height']},
+                              'rotated': False, 'trimmed': False,
+                              'spriteSourceSize': {'x': 0, 'y': 0, 'w': value['width'], 'h': value['height']},
+                              'sourceSize': {'w': value['width'], 'h': value['height']},
+                              'pivot': value['pivot']} for key, value in positions.items()},
+              'meta': {'image': 'atlas.png', 'size': {'w': atlas_width, 'h': atlas_height}, 'scale': '1'}}
+    (output_dir / 'atlas.json').write_text(json.dumps(phaser, ensure_ascii=False), encoding='utf8')
+    (output_dir / 'animations.json').write_text(json.dumps(animations, ensure_ascii=False), encoding='utf8')
+    (output_dir / 'quality.json').write_text(json.dumps(quality, ensure_ascii=False), encoding='utf8')
+    return {'frameCount': len(frames), 'animationCount': len(animations), 'atlasWidth': atlas_width, 'atlasHeight': atlas_height, 'quality': quality, 'warnings': ['Review transparency and frame boundaries visually before publishing.']}
+
+
+def auto(source_path, output_dir):
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError('OUTPUT_NOT_EMPTY: choose a new directory to preserve edits')
+    report = inspect(source_path, output_dir)
+    if not report.get('draft'):
+        raise ValueError('NO_MATCHING_PROFILE: add a measured profile before automatic extraction')
+    shutil.copyfile(source_path, output_dir / 'source.png')
+    draft_path = output_dir / 'draft.json'
+    draft_path.write_text(json.dumps(report['draft'], ensure_ascii=False), encoding='utf8')
+    result = render(source_path, draft_path, output_dir)
+    preview = '''<!doctype html><html lang="vi"><meta charset="utf-8"><title>Sprite preview</title>
+<style>body{background:#222;color:white;font:16px sans-serif;margin:30px}canvas{background:#333;width:768px;height:256px;max-width:100%;image-rendering:pixelated}label{margin:10px}</style>
+<h1>Sprite preview · bản nháp cần duyệt</h1><label>Animation <select id="action"></select></label>
+<button id="toggle">Pause</button><button id="restart">Restart</button>
+<label>FPS <input id="fps" type="number" min="4" max="24" value="10"></label>
+<label><input id="loop" type="checkbox" checked> Loop</label><div><canvas id="stage" width="768" height="256"></canvas></div>
+<p>Mở trang này qua HTTP server. Dùng Frame Editor trong ứng dụng để sửa crop, alpha và pivot.</p>
+<script type="application/json" id="data">__DATA__</script><script>
+const animations=JSON.parse(document.getElementById('data').textContent), list=document.getElementById('action');
+for(const name of Object.keys(animations)){const option=document.createElement('option');option.value=name;option.textContent=name;list.append(option)}
+const canvas=document.getElementById('stage'),ctx=canvas.getContext('2d'),cache={};let playing=true,index=0,last=0;
+document.getElementById('toggle').onclick=()=>{playing=!playing;document.getElementById('toggle').textContent=playing?'Pause':'Play'};
+document.getElementById('restart').onclick=()=>{index=0;last=0};list.onchange=()=>{index=0;last=0};
+function tick(now){const frames=animations[list.value].frames,fps=Math.max(4,Math.min(24,Number(document.getElementById('fps').value)||10));
+if(playing&&now-last>=1000/fps){last=now;if(index<frames.length-1)index++;else if(document.getElementById('loop').checked)index=0}
+const id=frames[index].frameId;if(!cache[id]){cache[id]=new Image();cache[id].src='frames/'+id+'.png'}
+ctx.clearRect(0,0,768,256);if(cache[id].complete)ctx.drawImage(cache[id],0,0);requestAnimationFrame(tick)}requestAnimationFrame(tick)
+</script></html>'''
+    (output_dir / 'preview.html').write_text(preview.replace('__DATA__', json.dumps(report['draft']['animations']).replace('<', '\\u003c')), encoding='utf8')
+    return {'profile': report['profile'], **result}
 
 
 def main():
     mode, source, config, output = sys.argv[1:5]
-    result = inspect(Path(source), Path(output)) if mode == 'inspect' else render(Path(source), Path(config), Path(output))
+    if mode == 'inspect':
+        result = inspect(Path(source), Path(output))
+    elif mode == 'render':
+        result = render(Path(source), Path(config), Path(output))
+    elif mode == 'auto':
+        result = auto(Path(source), Path(output))
+    else:
+        raise ValueError('UNSUPPORTED_MODE')
     print(json.dumps(result, ensure_ascii=False))
 
 

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { Worker } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 
 const root = path.resolve(
@@ -16,6 +16,7 @@ const db = new PrismaClient();
 const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   maxRetriesPerRequest: null,
 });
+const queue = new Queue("battle-assets", { connection: redis });
 function file(...parts: string[]) {
   const result = path.resolve(root, ...parts);
   if (!result.startsWith(root + path.sep)) throw new Error("Unsafe asset path");
@@ -72,6 +73,8 @@ const worker = new Worker(
       include: { versions: { orderBy: { version: "desc" }, take: 1 } },
     });
     if (!asset) return;
+    if (job.name === "inspect" && ["PUBLISHED", "ARCHIVED", "APPROVED"].includes(asset.versions[0]?.status ?? ""))
+      return;
     const source = file(asset.originalKey);
     try {
       if (job.name === "inspect") {
@@ -96,18 +99,26 @@ const worker = new Worker(
         const latest = await db.battleAssetVersion.findUniqueOrThrow({
           where: { id: asset.versions[0].id },
         });
+        const { draft, ...inspection } = report;
+        const existing = latest.metadata as Record<string, unknown>;
+        const canAutoDraft = !!draft && !Array.isArray(existing.frames) &&
+          !["PUBLISHED", "ARCHIVED", "APPROVED"].includes(latest.status);
         await db.battleAssetVersion.update({
           where: { id: latest.id },
           data: {
             status: "NEEDS_REVIEW",
-            metadata: {
-              ...(latest.metadata as object),
-              inspection: report,
-            } as Prisma.InputJsonValue,
+            metadata: canAutoDraft
+              ? { ...(draft as object), inspection } as Prisma.InputJsonValue
+              : { ...existing, inspection } as Prisma.InputJsonValue,
           },
         });
+        if (canAutoDraft) {
+          await queue.add("render", { assetId, versionId: latest.id },
+            { attempts: 1, removeOnComplete: 100, removeOnFail: 100 });
+        }
         return {
           candidateCount: (report.candidates as unknown[])?.length ?? 0,
+          autoDrafted: canAutoDraft,
         };
       }
       if (job.name === "render") {
@@ -172,6 +183,7 @@ worker.on("failed", (job, error) =>
 );
 async function shutdown() {
   await worker.close();
+  await queue.close();
   await redis.quit();
   await db.$disconnect();
   process.exit(0);

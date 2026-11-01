@@ -16,11 +16,15 @@ type Frame = {
   pivot: { x: number; y: number };
   footAnchor: { x: number; y: number };
   headAnchor: { x: number; y: number };
+  reviewRequired?: boolean;
+  reviewed?: boolean;
   hitbox?: Box;
   hurtbox?: Box;
   collisionBox?: Box;
   mask?: {
     color?: [number, number, number];
+    auto?: boolean;
+    strip?: [number, number, number, number];
     threshold?: number;
     feather?: number;
     strokes?: {
@@ -44,6 +48,7 @@ type Animation = {
 };
 type SpriteDraft = {
   canvas: { width: number; height: number };
+  sourceScale?: number;
   frames: Frame[];
   animations: Record<string, Animation>;
   character: {
@@ -179,6 +184,13 @@ export default function BattleAssetsPage() {
   const sprite = draft && "frames" in draft ? draft : null;
   const background = draft && "groundZones" in draft ? draft : null;
   const frame = sprite?.frames.find((f) => f.id === selectedFrame);
+  const inspection = version?.metadata?.inspection as
+    | { profile?: string; quality?: { frameId: string; status: string; confidence: number }[]; warnings?: string[] }
+    | undefined;
+  const waitingForRender = selected?.kind === "SPRITE" &&
+    (["UPLOADED", "PROCESSING"].includes(selected.status) ||
+      (version?.status === "DRAFT" && !Array.isArray(version?.metadata?.frames)) ||
+      (Array.isArray(version?.metadata?.frames) && !version?.atlasKey));
   const reload = useCallback(async () => {
     const rows = (await api("")) as Asset[];
     setAssets(rows);
@@ -187,6 +199,11 @@ export default function BattleAssetsPage() {
   useEffect(() => {
     void reload().catch((e) => setError(String(e)));
   }, [reload]);
+  useEffect(() => {
+    if (!waitingForRender) return;
+    const timer = window.setInterval(() => void reload().catch((e) => setError(String(e))), 2000);
+    return () => window.clearInterval(timer);
+  }, [waitingForRender, reload]);
   useEffect(() => {
     if (!selected) {
       setDraft(null);
@@ -279,7 +296,7 @@ export default function BattleAssetsPage() {
         },
       );
       setSelectedId((result as Asset).id);
-    }, "Đã upload. Worker đang phân tích ảnh; bấm Làm mới để xem đề xuất.");
+    }, "Đã upload. Hệ thống đang tự tạo frame, animation và atlas để bạn duyệt.");
   }
   function editFrame(next: Frame) {
     if (!sprite) return;
@@ -753,10 +770,20 @@ export default function BattleAssetsPage() {
           {selected?.kind === "SPRITE" && (
             <>
               <p>
-                Ảnh nguồn {selected.width} × {selected.height}. Phát hiện tự
-                động chỉ đề xuất vùng; cần bỏ nhãn và hiệu ứng không thuộc
-                frame.
+                Ảnh nguồn {selected.width} × {selected.height}. {inspection?.profile
+                  ? `Đã áp dụng mẫu ${inspection.profile} và tạo sẵn ${Object.keys(sprite?.animations ?? {}).length} animation. Bạn chỉ cần kiểm tra và chỉnh các frame còn sai.`
+                  : "Ảnh chưa khớp mẫu tự động; các vùng phát hiện được cần phân loại thủ công."}
               </p>
+              {waitingForRender && <p>Đang xử lý ảnh và xuất atlas…</p>}
+              {!waitingForRender && (
+                <button disabled={busy} onClick={() => void perform(
+                  () => api(`/${selected.id}/auto-draft`, { method: "POST" }),
+                  "Đang tạo phiên bản tự động; bản trước vẫn được giữ nguyên.",
+                )}>{Array.isArray(version?.metadata?.frames) ? "Tạo phiên bản tự động mới" : "Tạo frame và animation theo mẫu"}</button>
+              )}
+              {!!inspection?.quality?.length && (
+                <p>Kiểm tra tự động: {inspection.quality.filter((q) => q.status === "PASS").length} PASS · {inspection.quality.filter((q) => q.status === "REVIEW_REQUIRED").length} cần xem lại. Các frame chưa được duyệt không tự publish.</p>
+              )}
               <img
                 src={originalUrl(selected.id)}
                 alt="Sprite sheet nguồn"
@@ -786,6 +813,10 @@ export default function BattleAssetsPage() {
         <section className="card">
           <h2>Frame Editor · {sprite.character.name}</h2>
           <div className="row">
+            {sprite.sourceScale !== undefined && <label>Tỉ lệ nhân vật từ ảnh gốc
+              <input type="number" min="0.1" max="8" step="0.1" value={sprite.sourceScale}
+                onChange={(e) => change({ ...sprite, sourceScale: Number(e.target.value) })} />
+            </label>}
             <button onClick={undo} disabled={!history.length}>
               ↶ Undo
             </button>
@@ -878,6 +909,7 @@ export default function BattleAssetsPage() {
                 >
                   <span aria-hidden="true">☰</span>
                   <button onClick={() => setSelectedFrame(f.id)}>{f.id}</button>
+                  {f.reviewRequired && !f.reviewed && <span title="Đường cắt có thể chồng sang frame khác">⚠</span>}
                   <button onClick={() => moveFrame(i, -1)} aria-label="Lên">
                     ↑
                   </button>
@@ -1037,6 +1069,9 @@ export default function BattleAssetsPage() {
               {frame && (
                 <>
                   <h3>{frame.id}</h3>
+                  {frame.reviewRequired && !frame.reviewed && <p>Đường cắt hoặc hiệu ứng có thể cần chỉnh; xem ảnh RGBA bên dưới.</p>}
+                  {frame.reviewRequired && <label><input type="checkbox" checked={frame.reviewed ?? false} onChange={(e) => editFrame({ ...frame, reviewed: e.target.checked })} /> Đã kiểm tra frame này</label>}
+                  <label><input type="checkbox" checked={frame.mask?.auto ?? false} onChange={(e) => editFrame({ ...frame, mask: { ...frame.mask, auto: e.target.checked } })} /> Tách nền tự động</label>
                   <div className="row">
                     {[
                       ["Pivot", showPivot, setShowPivot],

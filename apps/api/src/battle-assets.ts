@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   Controller,
@@ -47,6 +47,8 @@ const frame = z.object({
   pivot: anchor.default({ x: 0.5, y: 1 }),
   footAnchor: anchor.default({ x: 0.5, y: 1 }),
   headAnchor: anchor.default({ x: 0.5, y: 0.1 }),
+  reviewRequired: z.boolean().optional(),
+  reviewed: z.boolean().optional(),
   hitbox: box.optional(),
   hurtbox: box.optional(),
   collisionBox: box.optional(),
@@ -60,6 +62,8 @@ const frame = z.object({
         ])
         .optional(),
       threshold: z.number().min(0).max(255).optional(),
+      auto: z.boolean().optional(),
+      strip: z.tuple([z.number().int(), z.number().int(), z.number().int().positive(), z.number().int().positive()]).optional(),
       feather: z.number().int().min(0).max(10).optional(),
       strokes: z
         .array(
@@ -97,6 +101,7 @@ const animation = z.object({
     .max(150),
 });
 const spriteDraft = z.object({
+  sourceScale: z.number().min(0.1).max(8).optional(),
   canvas: z
     .object({
       width: z.number().int().min(64).max(1024),
@@ -342,6 +347,28 @@ export class BattleAssetsController {
     );
     return asset;
   }
+  @Post(":id/auto-draft") async autoDraft(@Req() req: Request, @Param("id") id: string) {
+    await this.s.canManage(req);
+    parseId(id);
+    const asset = await this.s.db.battleAsset.findUnique({
+      where: { id }, include: { versions: { orderBy: { version: "desc" }, take: 1 } },
+    });
+    if (!asset || asset.kind !== "SPRITE") err(404, "Sprite asset not found");
+    const profiles = JSON.parse(await readFile(new URL("../../sprite-worker/profiles.json", import.meta.url), "utf8")) as Record<string, unknown>;
+    if (!profiles[asset!.checksum]) err(422, "No measured profile for this sprite sheet");
+    const latest = asset!.versions[0];
+    const metadata = latest.metadata as Record<string, unknown>;
+    const needsNewVersion = Array.isArray(metadata.frames) ||
+      ["PUBLISHED", "ARCHIVED", "APPROVED"].includes(latest.status);
+    const target = needsNewVersion
+      ? await this.s.db.battleAssetVersion.create({
+          data: { assetId: id, version: latest.version + 1, status: "DRAFT" },
+        })
+      : latest;
+    await this.s.queue.add("inspect", { assetId: id },
+      { attempts: 2, backoff: { type: "exponential", delay: 1000 }, removeOnComplete: 100, removeOnFail: 100 });
+    return { queued: true, version: target.version };
+  }
   @Put(":id/draft") async saveDraft(
     @Req() req: Request,
     @Param("id") id: string,
@@ -470,6 +497,8 @@ export class BattleAssetsController {
           warnings.push(`${name}: direction must be right`);
       }
       for (const f of data.frames ?? []) {
+        if (f.reviewRequired && !f.reviewed)
+          warnings.push(`${f.id}: automatic crop needs review`);
         if (!f.hurtbox) warnings.push(`${f.id}: hurtbox missing`);
         if (
           f.crop?.x + f.crop?.width > asset!.width ||
@@ -714,6 +743,10 @@ export class BattleAssetsController {
     else if (name === "thumbnail.png") key = `${id}/thumbnail.png`;
     else if (name === "metadata.json" && version)
       key = `${id}/v${version.version}/metadata.json`;
+    else if ((name === "atlas.json" || name === "animations.json") && version)
+      key = `${id}/v${version.version}/${name}`;
+    else if (name === "quality.json" && version)
+      key = `${id}/v${version.version}/quality.json`;
     else if (/^frame_[a-zA-Z0-9_-]+\.png$/.test(name) && version)
       key = `${id}/v${version.version}/frames/${name.slice(6)}`;
     else err(404, "File not found");

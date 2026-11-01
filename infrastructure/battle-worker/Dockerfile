@@ -13,7 +13,9 @@ RUN npm run db:generate && npm run build -w @cd/shared && npm run build -w @cd/w
 
 FROM node:22-bookworm-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/sprite-venv && /opt/sprite-venv/bin/pip install --no-cache-dir Pillow==10.4.0 numpy==1.26.4 opencv-python-headless==4.10.0.84
+ENV PATH="/opt/sprite-venv/bin:${PATH}"
 COPY --from=build --chown=node:node /app /app
 ENV NODE_ENV=production
 USER node
