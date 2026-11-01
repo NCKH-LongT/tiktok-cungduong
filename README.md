@@ -2,6 +2,24 @@
 
 Monorepo for a multi-LIVE dashboard, event pipeline and OBS temple overlay. The current implementation contains a usable simulator and initial live connector; read [progress](docs/PROGRESS.md) before production use.
 
+## Tính năng hiện có trên `main`
+
+| Nhóm | Đã triển khai | Còn cần xác minh / hoàn thiện |
+|---|---|---|
+| Tài khoản và thanh toán | Đăng nhập phiên cookie, Turnstile khi cấu hình, phân quyền admin, khóa/xóa user, payOS 50.000₫/24 giờ cho tài khoản thường, trang doanh thu và đặt lại lượt AI | Thanh toán thật và cấu hình HTTPS/webhook production |
+| TikTok LIVE | Nhiều LIVE theo tài khoản; kết nối/dừng bằng nút Dashboard; lưu sự kiện, thống kê người xem/comment/like/tim/share/quà; Simulator riêng | Kiểm tra lại với phòng TikTok đang phát; sự kiện rời phòng không có ID đáng tin cậy |
+| AI và giọng đọc | Gemini trả lời tiếng Việt theo lịch sử từng người; khóa Gemini riêng được mã hóa; giới hạn lượt/tốc độ; Google Cloud TTS hoặc KorvaTTS local, có fallback | Nghe trực tiếp trên OBS và tab trình duyệt không focus; giới hạn thực tế của từng nhà cung cấp |
+| Farm Công Đức | Overlay 9:16, nhân vật vào/quỳ/lạy, bảng tên avatar, lời cầu bay ngang, quà rơi, zoom người tặng, hào quang, bảng công đức | Kiểm tra hiệu năng và hình ảnh trong OBS thật; âm thanh YouTube phụ thuộc autoplay/chính sách nhúng |
+| Vận hành | Docker Compose, Jenkins CI/CD nhánh `main`, token overlay có thể thu hồi, test unit và smoke | Kiểm tra Jenkins/VPS và tải cao trên môi trường đích |
+
+Battle Arena đang phát triển ở nhánh riêng `feature/battle-arena`; không nằm trong bản Farm trên `main`.
+
+### Tương tác AI khi phòng đông
+
+API nhận quà combo theo **số lượng tích lũy lớn nhất**: x1 → x5 → x10 được tính là 10, không cộng thành 16. Bảng công đức xếp hạng theo tổng xu ước tính từ sự kiện TikTok đã lưu và cập nhật khi combo tăng. Quà hoàn tất chỉ được đưa vào hàng đợi lời cảm ơn một lần.
+
+Với sự kiện TikTok thật, quà cùng loại trong cửa sổ 10 giây và các bình luận niệm Phật/cầu nguyện cùng nhóm trong cửa sổ 8 giây được gom thành một lời đọc có tên tối đa 5 người; số người còn lại được nêu bằng tổng số. Phân loại nhận các cách viết có dấu và không dấu như “Nam mô A Di Đà Phật”, “cầu sức khỏe”, “cầu gia đình”, “cầu học tập”, “cầu công việc”. Lời gom dùng mẫu tiếng Việt cố định, không gọi Gemini; giọng đọc vẫn đi qua TTS theo cấu hình tài khoản. Simulator không tự gom theo cơ chế này để dễ thử từng sự kiện.
+
 ## Local setup
 
 Requirements: Node 22, npm 10, Docker Compose.
@@ -40,7 +58,7 @@ The OBS scene loads the supplied `apps/web/public/overlay/chanhdien.png` and the
 
 The overlay keeps a fixed 9:16 phone LIVE composition. Set OBS Browser Source to **1080 × 1920**; on wider windows the scene is centered with side margins instead of stretching. TikTok gifts use the image URL from TikTok's gift event and fall on either upper side of the temple. The displayed size increases with the gift's total coin value, with a cap so expensive gifts do not cover the scene. If TikTok provides no image, the gift name appears instead. The Simulator accepts an optional HTTPS gift image URL and coin value for testing. Donors gain a golden halo whose brightness grows with cumulative coins; their name badges fade more slowly. Refresh restores donor totals without replaying old falling gifts or camera zooms. The Voice & Audio tab lists local KorvaTTS voices before Google voices.
 
-The LIVE dashboard shows current room viewers and total viewers from TikTok `ROOM_USER`, unique join IDs, comments, gift totals, like events, heart counts and shares for the latest broadcast room. It combines successful worker sessions with the same TikTok room ID, and lists recent comments and gifts. Older records created before room IDs were stored fall back to their last successful worker session. TikTok does not send a reliable per-viewer leave event in this connector; the overlay removes the least recently active characters when the reported room count drops, or when their inactivity timeout expires. Resting characters bow occasionally for ambient motion; reduced-motion mode disables those extra bows. The Simulator can emit a room count to test inferred departures. The worker retries an unavailable LIVE with backoff and reconnects if its stream becomes stale.
+The LIVE dashboard shows current room viewers and total viewers from TikTok `ROOM_USER`, unique join IDs, comments, gift totals, like events, heart counts and shares for the latest broadcast room. It combines successful worker sessions with the same TikTok room ID, and lists recent comments and gifts. Older records created before room IDs were stored fall back to their last successful worker session. TikTok does not send a reliable per-viewer leave event in this connector; the overlay removes the least recently active characters when the reported room count drops, or when their inactivity timeout expires. Resting characters bow occasionally for ambient motion; reduced-motion mode disables those extra bows. The Simulator can emit a room count to test inferred departures. Khi kết nối lỗi hoặc luồng im lặng quá hai phút, trạng thái chuyển sang `unavailable`; người vận hành cần bấm kết nối lại trên Dashboard, hệ thống không tự mở kết nối TikTok mới.
 
 YouTube music uses the IFrame Player API. The overlay currently hides the 200×200 player, so autoplay is not reliable: YouTube requires a visible embedded player, and browsers can block playback with sound. If playback is blocked, the overlay shows **Bật nhạc YouTube**; if YouTube rejects the video, it shows the error. Reliable audio-only background music requires support for a directly hosted audio file rather than a hidden YouTube embed. Gift events zoom into the giver and blur/dim other characters; reloading the overlay restores presence without replaying old gifts or zooms. AI replies appear in the **AI Assistant** history and in the overlay for at least six seconds. Google TTS audio uses the selected Vietnamese voice when a credential file is available; KorvaTTS supplies MP3 if Google fails or reaches its quota. If the browser blocks audio playback, use **Bật giọng đọc tiếng Việt**. OBS Browser Source must capture overlay audio. Use music you have permission to play.
 

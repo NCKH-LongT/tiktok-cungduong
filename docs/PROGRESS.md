@@ -1,21 +1,29 @@
 # Progress and acceptance status
 
+## Farm Công Đức feature audit, 2026-11-02 (`main`)
+
+Đối chiếu mã nguồn với tài liệu trên commit `6f70729`. Hệ thống hiện có: đăng nhập/Turnstile, payOS day pass, quản lý nhiều LIVE, kết nối TikTok thủ công, thống kê LIVE, AI tiếng Việt với Gemini và lịch sử từng viewer, Google/local TTS, overlay Farm 9:16, quản trị user/doanh thu/lượt AI, Docker Compose và Jenkins `main`. Bảng tính năng và cách sử dụng nằm trong [README](../README.md#tính-năng-hiện-có-trên-main).
+
+Các commit mới sau lần cập nhật tài liệu trước bổ sung phân loại bình luận niệm Phật/cầu nguyện có dấu và không dấu; gom quà TikTok thật trong cửa sổ 10 giây, bình luận cùng nhóm trong cửa sổ 8 giây thành một lời đọc. Lời gom dùng mẫu cố định, không gọi Gemini; vẫn dùng TTS theo cấu hình. Combo quà lưu số lượng tích lũy lớn nhất, bảng công đức xếp theo tổng xu ước tính và cập nhật khi combo tăng. API/worker chặn phát lời gom trùng khi BullMQ retry. Simulator vẫn xử lý từng sự kiện để thử nghiệm. Khi TikTok lỗi hoặc im lặng quá hai phút, worker đánh dấu `unavailable` và chờ người vận hành kết nối lại; không tự reconnect.
+
+Kiểm tra tại workspace: `npm test` đạt 30/30 test, `npm run build -w @cd/web` và `npm run typecheck` đều đạt. Đây là unit/build check; chưa kiểm tra chuỗi quà/bình luận đông người với TikTok thật, âm thanh trên OBS hoặc Jenkins production. Battle Arena ở nhánh `feature/battle-arena`, không có trong `main`.
+
 This repository is a working foundation and simulator vertical slice, **not a completed 26-point MVP**.
 
 | Area | State | Evidence / gap |
 |---|---|---|
 | PostgreSQL, Prisma, bootstrap admin | Verified locally | Migration and admin bootstrap succeeded against Compose PostgreSQL on 2026-10-31 |
 | Login, sessions, tenant checks | Verified locally | Password login, cookie session and cross-account read/write denial passed smoke test; password reset and full RBAC editor pending |
-| Turnstile | Implemented when secret configured | Needs real site key and browser widget wiring |
+| Turnstile | Implemented when secret configured | Browser widget and backend Siteverify exist; production hostname/key verification pending |
 | TikTok connector | Live events verified locally | On 2026-10-31, `thaobedim` connected through the Compose worker and produced real room, chat, join, like and gift rows; a real join also reached the dashboard Socket.IO client. On 2026-11-01, direct SDK inspection found `member.userId=0` but a distinct `member.user.id`; normalization now uses the nested ID. The channel went offline during this update, so the corrected real join stream still needs verification when it resumes. Docker DNS required `TIKTOK_DNS=1.1.1.1` on this host. |
 | Simulator → DB → Socket → overlay | Partial verification | HTTP and Socket.IO smoke passed login, LIVE creation, join/leave presence, event delivery, snapshot, analytics isolation, cross-account denial and token revoke. Headless Chrome rendered two characters and their removal after simulated room count dropped to zero; bow timing and audio still need visual E2E check. |
-| Gemini and Google TTS | API audio verified; OBS playback pending | Compose AI smoke passed simulator → BullMQ → Gemini → Google TTS MP3 → Socket.IO using a locally mounted service account. Per-LIVE voice ID, rate, pitch and volume are stored. Browser/OBS audible playback still needs operator verification. The credential is excluded from Git and the image. |
+| Gemini and Vietnamese TTS | API audio verified; OBS playback pending | Compose AI smoke passed simulator → BullMQ → Gemini → Google TTS MP3 → Socket.IO using a locally mounted service account. Google/local TTS priority and fallback, per-LIVE voice ID, rate, pitch and volume are implemented. Browser/OBS audible playback still needs operator verification. The credential is excluded from Git and the image. |
 | Scene animation | Updated background, character sprite and Buddhist badges integrated | Headless Chrome rendered the updated temple background, a kneeling viewer and a layered name badge. Random ambient bows are implemented; OBS appearance and performance benchmark still need full verification. |
-| Leaderboard | Real gift rows only | Simulator gifts excluded; retention controls pending |
+| Leaderboard | Real TikTok gift rows only | Combo stores the largest cumulative count and ranks by estimated coins; simulator gifts excluded; real LIVE combo and retention controls pending |
 | Music and mixer | Partial | YouTube IFrame Player, serialized speech playback and volume ducking implemented; real browser/OBS audio behavior and full mixer channels still need verification |
 | Docker Compose and Jenkins | Compose and CI helper scripts verified locally | Application image built; all Compose services healthy; Nginx smoke passed on port 8090 after the host port change. Jenkins Pipeline-from-SCM checks out `main`, verifies `origin/main`, then automatically deploys successful builds using secret-file credential `tiktok-cungduong`. It bootstraps checksum-verified Node 22 when the agent has no npm and checks Docker prerequisites before building an image. It archives one Docker cache file, retains three numbered CI images and 20 Jenkins build records. A real Buildx probe confirmed local cache export/import and a cache hit; shell helper tests covered retention, logging and no-build deployment. The target Jenkins server and HTTPS deployment still need infrastructure verification. |
 | payOS day pass | Implemented; real paid transfer pending | Non-admin accounts require a 50,000₫ payment for 24 hours of LIVE access. The server verifies payOS webhooks, stores orders, settles each order once and reconciles pending links with payOS; admin accounts remain free. Local Compose integration created and cancelled real unpaid payOS links, rejected an invalid signature and a signed underpayment, confirmed one 24-hour grant despite duplicate webhook delivery, and produced one order from simultaneous checkout requests through Nginx. A simulator join, leave and rejoin produced one AI welcome marker. Configure the production HTTPS webhook and update Jenkins Secret file with payOS keys before taking real payments. |
-| Security hardening | Partial | Secret encryption, CSRF token, full RBAC, data retention, load tests pending |
+| Security hardening | Partial | Per-LIVE Gemini key encryption and origin checks exist; CSRF token, full RBAC, data retention and load tests pending |
 
 The simulator is never counted as a real TikTok LIVE. Google TTS produced MP3 in the local Compose smoke test; audible output in OBS remains unverified.
 
