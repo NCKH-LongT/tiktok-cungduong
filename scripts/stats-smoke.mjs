@@ -74,7 +74,22 @@ try {
   const afterFailedAttempt = await request('/lives/' + live.id + '/analytics');
   assert.equal(afterFailedAttempt.uniqueJoiners, 2);
   assert.equal(afterFailedAttempt.comments, 2);
-  console.log('Stats smoke passed: room totals, joiners, comments, gifts, likes, hearts, shares, reconnect and failed-session fallback');
+  await db.giftEvent.createMany({ data: [
+    { liveId: live.id, dedupKey: randomUUID(), viewerKey: 'viewer-1', giftName: 'Quà khác', quantity: 1, estimatedCoins: 10, source: 'tiktok', occurredAt: new Date() },
+    { liveId: live.id, dedupKey: randomUUID(), viewerKey: 'viewer-2', giftName: 'Quà lớn', quantity: 2, estimatedCoins: 100, source: 'tiktok', occurredAt: new Date() },
+    { liveId: live.id, dedupKey: randomUUID(), viewerKey: 'viewer-3', giftName: 'Quà chưa rõ xu', quantity: 5, source: 'tiktok', occurredAt: new Date() },
+    { liveId: live.id, dedupKey: randomUUID(), viewerKey: 'viewer-4', giftName: 'Quà cùng điểm', quantity: 5, source: 'tiktok', occurredAt: new Date() },
+  ] });
+  const ranked = await request('/lives/' + live.id + '/analytics');
+  assert.deepEqual(ranked.leaderboard.map(row => row.viewerKey), ['viewer-2', 'viewer-1', 'viewer-3', 'viewer-4']);
+  assert.deepEqual(ranked.leaderboard.map(row => row.points), [100, 13, 5, 5]);
+  assert.deepEqual(ranked.leaderboard.map(row => row.gifts), [2, 4, 5, 5]);
+  const overlay = new URL((await request('/lives/' + live.id + '/overlay-token/rotate', 'POST', {})).url);
+  const snapshot = await request('/overlay/' + live.id + '/snapshot?token=' + encodeURIComponent(overlay.searchParams.get('token')));
+  assert.deepEqual(snapshot.leaderboard.map(row => [row.viewerKey, row.points]), [
+    ['viewer-2', 100], ['viewer-1', 13], ['viewer-3', 5], ['viewer-4', 5],
+  ]);
+  console.log('Stats smoke passed: room totals, joiners, comments, gifts, likes, hearts, shares, reconnect, failed-session fallback and stable merit ranking');
 } finally {
   await db.liveChannel.delete({ where: { id: live.id } });
   await db.$disconnect();

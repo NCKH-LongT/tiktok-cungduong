@@ -29,7 +29,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   const previewMutedRef = useRef(false);
   const [previewMuted, setPreviewMuted] = useState(false);
   const [status, setStatus] = useState('');
-  const [leaders, setLeaders] = useState<{ viewerKey: string; avatarUrl?: string; gifts: number }[]>([]);
+  const [leaders, setLeaders] = useState<{ viewerKey: string; avatarUrl?: string; gifts: number; points: number }[]>([]);
   const [speech, setSpeech] = useState('');
   const [musicUrl, setMusicUrl] = useState('');
   const [musicVolume, setMusicVolume] = useState(30);
@@ -43,6 +43,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
 
   useEffect(() => {
     let app: Application | undefined, socket: Socket | undefined, disposed = false;
+    let leaderboardRequest = 0;
     let scene: Container, camera: Container, audioContext: AudioContext | undefined;
     let ttl = 900000, maxPeople = 40, reducedMotion = false, fishEnabled = false, fishVolume = .3, ttsVolume = .8, ttsRate = 1, ttsPitch = 0, musicBase = 30, currentMusic = 30;
     let nextAmbientBowAt = Date.now() + 10000, liveActive = false, voiceAllowed = true;
@@ -494,21 +495,23 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       socket.on('disconnect', () => setStatus('Mất kết nối · đang thử lại'));
       socket.on('connect_error', () => setStatus('Không thể kết nối socket'));
       socket.on('gift.leaderboard.changed', () => {
+        const request = ++leaderboardRequest;
         void fetch(`/api/overlay/${id}/snapshot?token=${encodeURIComponent(token)}`)
           .then(response => response.ok ? response.json() : Promise.reject(new Error('snapshot unavailable')))
-          .then(data => setLeaders(data.leaderboard ?? []))
+          .then(data => {
+            if (disposed || request !== leaderboardRequest) return;
+            setLeaders(data.leaderboard ?? []);
+            for (const key of data.vipViewerKeys ?? []) {
+              vipViewerKeys.add(key);
+              const person = people.get(key);
+              if (person) showBadge(person);
+            }
+          })
           .catch(() => {});
       });
       socket.on('live.event', (event: LiveEvent) => {
         if (event.source === 'tiktok' && !liveActive) return;
         onEvent(event);
-        if (event.eventType === 'gift.received' && event.payload.repeatEnd !== false) {
-          void fetch(`/api/overlay/${id}/snapshot?token=${encodeURIComponent(token)}`)
-            .then(response => response.json()).then(data => {
-              setLeaders(data.leaderboard ?? []);
-              for (const key of data.vipViewerKeys ?? []) { vipViewerKeys.add(key); const person = people.get(key); if (person) showBadge(person); }
-            });
-        }
       });
       socket.on('live.status', (change: { status: string }) => {
         liveActive = change.status === 'connecting' || change.status === 'connected';
@@ -579,7 +582,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     {status && <div style={{ position: 'absolute', top: 20, left: 20, padding: 10, background: '#1b140dcc', borderRadius: 10, color: '#fff' }}>{status}</div>}
     <div style={{ position: 'absolute', top: '11%', right: '2%', width: '31%', padding: '1.2%', background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', boxSizing: 'border-box', textAlign: 'center', fontSize: '.85em' }}>
       <strong>Bảng Công Đức</strong>
-      {leaders.map((leader, index) => <div key={leader.viewerKey} title={`Hạng ${index + 1}: +${leader.gifts} công đức`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 }}><span>{index + 1}.</span>{leader.avatarUrl ? <img src={leader.avatarUrl} alt="" referrerPolicy="no-referrer" style={{ width: 30, height: 30, borderRadius: '50%', objectFit: 'cover' }} /> : <span style={{ width: 30, height: 30, borderRadius: '50%', background: '#a46b29', display: 'grid', placeItems: 'center' }}>☸</span>}<span>+{leader.gifts} CĐ</span></div>)}
+      {leaders.map((leader, index) => <div key={leader.viewerKey} title={`Hạng ${index + 1}: +${leader.points} công đức · ${leader.gifts} quà`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 }}><span>{index + 1}.</span>{leader.avatarUrl ? <img src={leader.avatarUrl} alt="" referrerPolicy="no-referrer" style={{ width: 30, height: 30, borderRadius: '50%', objectFit: 'cover' }} /> : <span style={{ width: 30, height: 30, borderRadius: '50%', background: '#a46b29', display: 'grid', placeItems: 'center' }}>☸</span>}<span>+{leader.points} CĐ</span></div>)}
     </div>
     <MusicPlayer key={musicUrl} url={musicUrl} volume={previewMuted || !livePlaying ? 0 : musicVolume} playing={livePlaying && !previewMuted} playerRef={musicPlayer} />
     {speech && <div style={{ position: 'absolute', bottom: 50, left: '10%', right: '10%', padding: 20, background: '#241a12dd', color: '#fff', textAlign: 'center', borderRadius: 18 }}>{speech}</div>}

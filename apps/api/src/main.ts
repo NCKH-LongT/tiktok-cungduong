@@ -249,10 +249,22 @@ class Services {
     if (firstComment) await this.redis.set(`ai:comment:answered:${event.liveId}:${userKey}`, '1', 'EX', 86400);
   }
   async leaderboard(id: string, includeSimulator = false) {
-    const rows = await this.db.giftEvent.groupBy({ by: ['viewerKey'], where: { liveId: id, ...(includeSimulator ? {} : { source: EventSource.tiktok }) }, _sum: { quantity: true, estimatedCoins: true }, orderBy: { _sum: { estimatedCoins: 'desc' } }, take: 5 });
+    // Rank by the same merit points shown on the overlay. Gifts without a
+    // known coin value contribute one point per item instead of sorting as NULL.
+    const rows = await this.db.$queryRaw<{ viewerKey: string; gifts: bigint; points: bigint; estimatedCoins: bigint | null }[]>(Prisma.sql`
+      SELECT "viewerKey", SUM(quantity)::bigint AS gifts,
+             SUM(COALESCE("estimatedCoins", quantity))::bigint AS points,
+             SUM("estimatedCoins")::bigint AS "estimatedCoins"
+      FROM "GiftEvent"
+      WHERE "liveId" = ${id}::uuid
+        ${includeSimulator ? Prisma.empty : Prisma.sql`AND source = ${EventSource.tiktok}::"EventSource"`}
+      GROUP BY "viewerKey"
+      ORDER BY points DESC, gifts DESC, "viewerKey" ASC
+      LIMIT 5
+    `);
     const viewers = await this.db.viewer.findMany({ where: { liveId: id, userKey: { in: rows.map(r => r.viewerKey) } }, select: { userKey: true, nickname: true, avatarUrl: true } });
     const byKey = new Map(viewers.map(viewer => [viewer.userKey, viewer]));
-    return rows.map(r => ({ viewerKey: r.viewerKey, nickname: byKey.get(r.viewerKey)?.nickname, avatarUrl: byKey.get(r.viewerKey)?.avatarUrl, gifts: r._sum.quantity ?? 0, estimatedCoins: r._sum.estimatedCoins }));
+    return rows.map(r => ({ viewerKey: r.viewerKey, nickname: byKey.get(r.viewerKey)?.nickname, avatarUrl: byKey.get(r.viewerKey)?.avatarUrl, gifts: Number(r.gifts), points: Number(r.points), estimatedCoins: r.estimatedCoins === null ? null : Number(r.estimatedCoins) }));
   }
 }
 

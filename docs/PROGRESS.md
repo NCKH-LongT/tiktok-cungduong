@@ -2,6 +2,8 @@
 
 ## Farm Công Đức feature audit, 2026-11-02 (`main`)
 
+Bảng Công Đức đã được sửa trên `main`: trước đây API xếp theo xu nhưng overlay hiện số quà, khiến thứ hạng không khớp số trên bảng. API và overlay nay dùng cùng tổng CĐ; quà không rõ xu tính một điểm mỗi món, bằng điểm thì xét số quà và TikTok ID. Overlay bỏ lần tải bảng lặp và bỏ qua phản hồi cũ đến muộn. Bài smoke trên Docker/PostgreSQL riêng đã kiểm tra thứ tự điểm `100, 13, 5, 5` qua cả Analytics và overlay snapshot. Chưa kiểm tra trực tiếp trên phiên LIVE TikTok thật sau sửa.
+
 Đối chiếu mã nguồn với tài liệu trên commit `6f70729`. Hệ thống hiện có: đăng nhập/Turnstile, payOS day pass, quản lý nhiều LIVE, kết nối TikTok thủ công, thống kê LIVE, AI tiếng Việt với Gemini và lịch sử từng viewer, Google/local TTS, overlay Farm 9:16, quản trị user/doanh thu/lượt AI, Docker Compose và Jenkins `main`. Bảng tính năng và cách sử dụng nằm trong [README](../README.md#tính-năng-hiện-có-trên-main).
 
 Các commit mới sau lần cập nhật tài liệu trước bổ sung phân loại bình luận niệm Phật/cầu nguyện có dấu và không dấu; gom quà TikTok thật trong cửa sổ 10 giây, bình luận cùng nhóm trong cửa sổ 8 giây thành một lời đọc. Lời gom dùng mẫu cố định, không gọi Gemini; vẫn dùng TTS theo cấu hình. Combo quà lưu số lượng tích lũy lớn nhất, bảng công đức xếp theo tổng xu ước tính và cập nhật khi combo tăng. API/worker chặn phát lời gom trùng khi BullMQ retry. Simulator vẫn xử lý từng sự kiện để thử nghiệm. Khi TikTok lỗi hoặc im lặng quá hai phút, worker đánh dấu `unavailable` và chờ người vận hành kết nối lại; không tự reconnect.

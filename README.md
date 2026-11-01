@@ -16,7 +16,7 @@ Battle Arena đang phát triển ở nhánh riêng `feature/battle-arena`; khôn
 
 ### Tương tác AI khi phòng đông
 
-API nhận quà combo theo **số lượng tích lũy lớn nhất**: x1 → x5 → x10 được tính là 10, không cộng thành 16. Bảng công đức xếp hạng theo tổng xu ước tính từ sự kiện TikTok đã lưu và cập nhật khi combo tăng. Quà hoàn tất chỉ được đưa vào hàng đợi lời cảm ơn một lần.
+API nhận quà combo theo **số lượng tích lũy lớn nhất**: x1 → x5 → x10 được tính là 10, không cộng thành 16. Bảng công đức xếp hạng và hiển thị cùng một số điểm: tổng xu ước tính từ quà TikTok đã lưu; quà chưa có giá trị xu được tính một điểm mỗi món. Khi bằng điểm, ưu tiên người có nhiều quà hơn rồi đến TikTok ID để thứ tự ổn định. Bảng cập nhật khi combo tăng. Quà hoàn tất chỉ được đưa vào hàng đợi lời cảm ơn một lần.
 
 Với sự kiện TikTok thật, quà cùng loại trong cửa sổ 10 giây và các bình luận niệm Phật/cầu nguyện cùng nhóm trong cửa sổ 8 giây được gom thành một lời đọc có tên tối đa 5 người; số người còn lại được nêu bằng tổng số. Phân loại nhận các cách viết có dấu và không dấu như “Nam mô A Di Đà Phật”, “cầu sức khỏe”, “cầu gia đình”, “cầu học tập”, “cầu công việc”. Lời gom dùng mẫu tiếng Việt cố định, không gọi Gemini; giọng đọc vẫn đi qua TTS theo cấu hình tài khoản. Simulator không tự gom theo cơ chế này để dễ thử từng sự kiện.
 
