@@ -1,0 +1,2 @@
+ALTER TABLE "User" ADD COLUMN "maxAiReplyWords" INTEGER NOT NULL DEFAULT 35;
+ALTER TABLE "AudioConfiguration" ADD COLUMN "localVoice" TEXT NOT NULL DEFAULT 'ngoc_huyen';

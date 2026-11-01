@@ -8,7 +8,7 @@ import { TikTokLiveConnection, WebcastEvent, ControlEvent } from 'tiktok-live-co
 import { hasLiveAccess, type LiveEvent } from '@cd/shared';
 import { decryptGeminiKey } from '@cd/shared/gemini-key';
 import { asNumber, asRecord, asString, normalizeTikTokComment, normalizeTikTokGift, normalizeTikTokUser } from './tiktok-events.js';
-import { addressViewer } from './ai-text.js';
+import { addressViewer, limitReplyWords } from './ai-text.js';
 import { perMinute, reserveDailyTtsSlot, waitForProviderSlot } from './provider-rate-limit.js';
 import { isValidMp3, synthesizeLocalSpeech } from './local-tts.js';
 
@@ -120,19 +120,20 @@ async function runAI() {
   }
   const worker = new Worker('speech', async job => {
     const input = job.data.event as LiveEvent;
-    const liveAtStart = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { ownerId: true, deletedAt: true, status: true, owner: { select: { role: true, accessUntil: true, ttsProvider: true } } } });
+    const liveAtStart = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { ownerId: true, deletedAt: true, status: true, owner: { select: { role: true, accessUntil: true, ttsProvider: true, maxAiReplyWords: true } } } });
     if (!liveAtStart || liveAtStart.deletedAt || (input.source === 'tiktok' && (liveAtStart.status !== 'connected' || !hasLiveAccess(liveAtStart.owner.role, liveAtStart.owner.accessUntil)))) return;
     const config = await db.aIConfiguration.findUnique({ where: { liveId: input.liveId } });
     if (!config?.enabled) return;
     const name = (input.user?.nickname ?? 'phật tử').slice(0, 60);
+    const replyLimit = Math.max(15, Math.min(100, liveAtStart.owner.maxAiReplyWords));
     let text: string;
     let usedFallback = false;
     let prompt = '';
     if (input.eventType === 'gift.received') {
       const giftName = String(input.payload.giftName ?? 'quà').slice(0, 60);
       const coins = Math.max(0, Number(input.payload.estimatedCoins) || 0) * Math.max(1, Number(input.payload.quantity) || 1);
-      const maxWords = coins > 1000 ? 85 : coins > 100 ? 55 : 25;
-      prompt = `Hãy cảm ơn ${name} vì đã tặng ${giftName}${coins ? ` (${coins} xu)` : ''}. Câu cảm ơn cần khác các câu quen thuộc; ${coins > 100 ? 'sâu sắc, ấm áp và dài hơn để ghi nhận tấm lòng' : 'ngắn gọn, ấm áp'}. Bắt buộc nhắc tên người tặng và tên quà.`;
+      const maxWords = Math.min(replyLimit, coins > 100 ? 55 : 25);
+      prompt = `Hãy cảm ơn ${name} vì đã tặng ${giftName}${coins ? ` (${coins} xu)` : ''}. Câu cảm ơn ngắn gọn, ấm áp và khác các câu quen thuộc. Bắt buộc nhắc tên người tặng và tên quà.`;
       try { text = await askGemini(prompt, config, maxWords, name); }
       catch (error) {
         usedFallback = true;
@@ -148,11 +149,6 @@ async function runAI() {
         text = variants[Array.from(input.eventId).reduce((sum, letter) => sum + letter.charCodeAt(0), 0) % variants.length];
       }
       if (!text.toLocaleLowerCase('vi').includes(giftName.toLocaleLowerCase('vi'))) text = `Cảm ơn ${name} đã tặng ${giftName}. ${text}`;
-      if (coins > 100 && text.trim().split(/\s+/u).length < (coins > 1000 ? 50 : 30)) {
-        text += coins > 1000
-          ? ' Chánh điện trân trọng tấm lòng bạn dành cho cộng đồng hôm nay. Mong sự sẻ chia này nhắc chúng ta sống chậm lại, lắng nghe nhau nhiều hơn và dành thêm thời gian cho những người mình thương.'
-          : ' Chánh điện trân trọng tấm lòng ấy. Mong bạn luôn tìm được sự bình yên trong những điều giản dị mỗi ngày.';
-      }
     } else if (input.eventType === 'viewer.join') text = `Chào mừng ${name} đến với Chánh Điện Nhất Niệm Tâm Thành.`;
     else {
       prompt = String(input.payload.text ?? '').slice(0, 300);
@@ -169,14 +165,14 @@ async function runAI() {
         if (answer) turns.push({ role: 'model', parts: [{ text: answer }] });
       }
       if (!comments.some(comment => comment.eventId === input.eventId)) turns.push({ role: 'user', parts: [{ text: prompt }] });
-      try { text = await askGemini(turns, config, 50, name); }
+      try { text = await askGemini(turns, config, replyLimit, name); }
       catch (error) {
         usedFallback = true;
         console.warn('Gemini comment reply unavailable; using Vietnamese fallback:', errorMessage(error));
         text = `${name} ơi, Chánh điện đang tạm chậm phản hồi. Mong ${name} giữ lòng bình an và thử gửi lại sau ít phút.`;
       }
     }
-    text = addressViewer(text, name);
+    text = limitReplyWords(addressViewer(text, name), replyLimit);
     if (!(await db.liveChannel.findFirst({ where: { id: input.liveId, deletedAt: null }, select: { id: true } }))) return;
     const interaction = await db.aIInteraction.create({ data: { liveId: input.liveId, sourceEventId: input.eventId, prompt: prompt || null, answer: text, status: usedFallback ? 'fallback' : 'completed' } });
     let audio: string | undefined;
@@ -204,7 +200,7 @@ async function runAI() {
         }
       } else if (process.env.LOCAL_TTS_URL) {
         try {
-          audio = await synthesizeLocalSpeech(process.env.LOCAL_TTS_URL, text, voice?.speakingRate ?? 1);
+          audio = await synthesizeLocalSpeech(process.env.LOCAL_TTS_URL, text, voice?.speakingRate ?? 1, voice?.localVoice ?? 'ngoc_huyen');
           voiceStatus = usedFallback ? 'fallback_local_audio' : 'local_audio_ready';
         } catch (error) {
           voiceStatus = 'local_tts_error';

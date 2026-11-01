@@ -4,6 +4,7 @@ import { io } from 'socket.io-client';
 
 const base = process.env.SMOKE_BASE_URL ?? 'http://localhost:8090';
 if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD) throw new Error('ADMIN_EMAIL and ADMIN_PASSWORD required');
+const turnstileToken = process.env.SMOKE_TURNSTILE_TOKEN ?? (process.env.LOCAL_TURNSTILE_TEST === 'true' ? 'XXXX.DUMMY.TOKEN.XXXX' : undefined);
 let cookie = '';
 async function request(path, method = 'GET', body) {
   const response = await fetch(base + '/api' + path, { method, headers: { 'content-type': 'application/json', cookie }, body: body ? JSON.stringify(body) : undefined });
@@ -13,13 +14,16 @@ async function request(path, method = 'GET', body) {
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);
   return data;
 }
-await request('/auth/login', 'POST', { login: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD });
+await request('/auth/login', 'POST', { login: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD, turnstileToken });
 const suffix = randomUUID().slice(0, 8);
 const adminCookie = cookie;
 const testEmail = `ai_smoke_${suffix}@example.invalid`;
 const testPassword = randomUUID() + randomUUID();
-const testUser = await request('/users', 'POST', { email: testEmail, username: 'ai_smoke_' + suffix, password: testPassword });
-await request('/auth/login', 'POST', { login: testEmail, password: testPassword });
+const testUser = await request('/users', 'POST', { email: testEmail, username: 'ai_smoke_' + suffix, password: testPassword, role: 'ADMIN' });
+await request(`/users/${testUser.id}`, 'PATCH', { ttsProvider: 'local', maxAiReplyWords: 20 });
+const configuredUser = (await request('/users')).find(user => user.id === testUser.id);
+assert.equal(configuredUser.maxAiReplyWords, 20);
+await request('/auth/login', 'POST', { login: testEmail, password: testPassword, turnstileToken });
 const live = await request('/lives', 'POST', { uniqueId: 'ai_smoke_' + suffix, title: 'AI smoke ' + suffix });
 let socket;
 try {
@@ -36,8 +40,9 @@ try {
     const timer = setTimeout(() => reject(new Error('Audio config socket timeout')), 5000);
     socket.once('live.config', change => { clearTimeout(timer); resolve(change); });
   });
-  await request(`/lives/${live.id}/audio-config`, 'PUT', { musicVolume: 42, ttsVolume: 65 });
+  await request(`/lives/${live.id}/audio-config`, 'PUT', { musicVolume: 42, ttsVolume: 65, localVoice: 'ngoc_huyen' });
   assert.equal((await configUpdate).audio.musicVolume, 42);
+  assert.equal((await request(`/lives/${live.id}/audio-config`)).localVoice, 'ngoc_huyen');
   const speech = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('AI speech timeout')), 30000);
     socket.once('speech.ready', job => { clearTimeout(timer); resolve(job); });
@@ -48,6 +53,7 @@ try {
   assert.equal(result.sourceEventId, simulated.eventId);
   assert.ok(result.text?.length > 0);
   assert.ok(result.text.includes('Minh'), 'AI reply did not address the viewer by name');
+  assert.ok(result.text.trim().split(/\s+/u).length <= 20, 'AI reply exceeded admin word limit');
   assert.ok(!/(^|[^\p{L}])bạn(?=$|[^\p{L}])/iu.test(result.text), 'AI reply still uses bạn');
   if (process.env.EXPECT_TTS_AUDIO === '1') assert.ok(result.audio?.length > 100, 'Google TTS did not return audio');
   const conversation = await request(`/lives/${live.id}/conversation/ai-smoke-viewer`);
@@ -73,12 +79,14 @@ try {
   const giftResult = await giftSpeech;
   assert.equal(giftResult.sourceEventId, gifted.eventId);
   assert.ok(giftResult.text.includes('Hoa hồng'));
+  assert.ok(giftResult.text.trim().split(/\s+/u).length <= 20, 'Gift reply exceeded admin word limit');
   if (process.env.EXPECT_TTS_AUDIO === '1') assert.ok(giftResult.audio?.length > 100, 'Gift reply has no Google TTS audio');
   const snapshot = await request(`/overlay/${live.id}/snapshot?token=${token}`);
   assert.ok(snapshot.vipViewerKeys.includes('ai-smoke-viewer'), 'VIP badge was not activated after 101 xu');
   const history = await request(`/lives/${live.id}/ai-history`);
   assert.ok(history.some(item => item.answer === result.text));
   assert.ok(history.some(item => item.answer === giftResult.text));
+  assert.ok(history.some(item => item.answer === result.text && ['local_audio_ready', 'fallback_local_audio'].includes(item.status)), 'Selected local voice was not used');
   const analytics = await request(`/lives/${live.id}/analytics`);
   assert.equal(Object.keys(analytics.counts).length, 0);
   console.log('AI smoke passed: named Gemini reply, contextual follow-up, per-viewer conversation, gift thanks and Socket.IO; LIVE analytics unchanged');

@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 type TtsProvider = 'google' | 'local';
-type User = { id: string; email: string; username: string; role: string; active: boolean; ttsProvider: TtsProvider };
+type User = { id: string; email: string; username: string; role: string; active: boolean; ttsProvider: TtsProvider; maxAiReplyWords: number };
 
 export default function Admin() {
   const [users, setUsers] = useState<User[]>([]);
@@ -12,6 +12,7 @@ export default function Admin() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busyId, setBusyId] = useState('');
+  const [replyLimits, setReplyLimits] = useState<Record<string, string>>({});
 
   async function load() {
     const response = await fetch('/api/users', { cache: 'no-store' });
@@ -32,13 +33,14 @@ export default function Admin() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Không tạo được tài khoản.'); }
   }
 
-  async function update(user: User, changes: { active?: boolean; ttsProvider?: TtsProvider }) {
+  async function update(user: User, changes: { active?: boolean; ttsProvider?: TtsProvider; maxAiReplyWords?: number }) {
     setBusyId(user.id);
     setError('');
     try {
       const response = await fetch(`/api/users/${user.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(changes) });
       if (!response.ok) throw new Error((await response.json() as { error?: string }).error ?? 'Không lưu được thay đổi.');
       await load();
+      if (changes.maxAiReplyWords !== undefined) setReplyLimits(current => { const next = { ...current }; delete next[user.id]; return next; });
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Không lưu được thay đổi.'); }
     finally { setBusyId(''); }
   }
@@ -60,7 +62,7 @@ export default function Admin() {
       </section>
       <section className="card">
         <h2>Người dùng</h2>
-        <p className="muted">Nguồn giọng đọc áp dụng cho mọi LIVE của tài khoản. Nếu nguồn đã chọn lỗi, hệ thống thử nguồn còn lại.</p>
+        <p className="muted">Nguồn giọng đọc và giới hạn số từ áp dụng cho mọi LIVE của tài khoản. Nếu nguồn đã chọn lỗi, hệ thống thử nguồn còn lại.</p>
         {users.map(user => <div className="row" key={user.id} style={{ padding: '10px 0', borderBottom: '1px solid #4a3826' }}>
           <span>{user.email} · {user.role}</span>
           <label>Giọng đọc
@@ -69,6 +71,10 @@ export default function Admin() {
               <option value="local">Local trước</option>
             </select>
           </label>
+          <label>Phản hồi AI tối đa (từ)
+            <input type="number" min="15" max="100" value={replyLimits[user.id] ?? user.maxAiReplyWords} disabled={busyId === user.id} onChange={event => setReplyLimits(current => ({ ...current, [user.id]: event.target.value }))} style={{ width: 85 }} />
+          </label>
+          <button disabled={busyId === user.id || replyLimits[user.id] === undefined || !Number.isInteger(Number(replyLimits[user.id])) || Number(replyLimits[user.id]) < 15 || Number(replyLimits[user.id]) > 100} onClick={() => void update(user, { maxAiReplyWords: Number(replyLimits[user.id]) })}>Lưu số từ</button>
           {user.role !== 'SUPER_ADMIN' && <button disabled={busyId === user.id} onClick={() => void update(user, { active: !user.active })}>{user.active ? 'Khóa' : 'Mở khóa'}</button>}
         </div>)}
       </section>

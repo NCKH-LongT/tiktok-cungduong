@@ -107,7 +107,7 @@ services:
     build: { context: ., dockerfile: infrastructure/local-tts/Dockerfile }
     environment:
       HF_HOME: /models
-      LOCAL_TTS_VOICE: ${LOCAL_TTS_VOICE:-khanh_vy}
+      LOCAL_TTS_VOICE: ${LOCAL_TTS_VOICE:-ngoc_huyen}
       LOCAL_TTS_THREADS: ${LOCAL_TTS_THREADS:-2}
     volumes:
       - tts-models:/models

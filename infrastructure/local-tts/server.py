@@ -42,10 +42,14 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(speed, (int, float)) or not 0.5 <= speed <= 2:
                 self.send_error(400, "Invalid speaking rate")
                 return
+            voice = request.get("voice", os.getenv("LOCAL_TTS_VOICE", "ngoc_huyen"))
             with model_lock:
                 engine = get_model_unlocked()
+                if not isinstance(voice, str) or voice not in engine.list_voices():
+                    self.send_error(400, "Invalid local voice")
+                    return
                 wav, _ = engine.synthesize(
-                    text, voice=os.getenv("LOCAL_TTS_VOICE", "khanh_vy"),
+                    text, voice=voice,
                     lang="vi", total_steps=16, speed=float(speed),
                 )
             output = io.BytesIO()

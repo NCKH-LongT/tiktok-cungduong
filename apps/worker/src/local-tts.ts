@@ -1,8 +1,8 @@
-export async function synthesizeLocalSpeech(url: string, text: string, speed: number): Promise<string> {
+export async function synthesizeLocalSpeech(url: string, text: string, speed: number, voice: string): Promise<string> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text, speed }),
+    body: JSON.stringify({ text, speed, voice }),
     signal: AbortSignal.timeout(240000),
   });
   if (!response.ok) throw new Error(`Local TTS returned ${response.status}`);

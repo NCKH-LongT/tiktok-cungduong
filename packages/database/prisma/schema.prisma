@@ -33,6 +33,7 @@ model User {
   passwordHash String
   role         RoleCode      @default(USER)
   ttsProvider  String        @default("google")
+  maxAiReplyWords Int        @default(35)
   active       Boolean       @default(true)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -293,6 +294,7 @@ model AudioConfiguration {
   ttsVolume         Int         @default(80)
   ttsEnabled        Boolean     @default(true)
   voiceId           String      @default("vi-VN-Standard-A")
+  localVoice        String      @default("ngoc_huyen")
   speakingRate      Float       @default(1)
   pitch             Float       @default(0)
   woodenFishEnabled Boolean     @default(false)
