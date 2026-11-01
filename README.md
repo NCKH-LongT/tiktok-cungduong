@@ -24,6 +24,8 @@ Google TTS có giới hạn 30 request/phút toàn hệ thống theo mặc đị
 
 Trang **Quản trị tài khoản** cho phép admin đặt Google hoặc local làm nguồn giọng đọc ưu tiên cho từng tài khoản. Mọi LIVE của tài khoản dùng nguồn đó; nếu nguồn ưu tiên không tạo được MP3, worker thử nguồn còn lại. Cấu hình mới áp dụng cho câu trả lời kế tiếp, không cần khởi động lại container. Các URL trong `PUBLIC_APP_URL` và `CORS_ORIGINS` được chuẩn hóa về origin để `http://localhost:8090/` vẫn khớp với Origin do trình duyệt gửi.
 
+Admin cũng xem được lượt AI đã dùng trong ngày UTC của từng tài khoản tại `/admin` và bấm **Đặt lại lượt AI** để cấp lại lượt thủ công. Thao tác này xóa bộ đếm AI trong ngày cùng bộ đếm phụ cho lời chào và bình luận lặp của tài khoản, áp dụng cho tất cả LIVE của tài khoản đó. Lượt Google TTS, giới hạn tốc độ theo phút và lịch sử câu trả lời được giữ nguyên. API ghi audit log với người thực hiện, tài khoản đích và số lượt trước khi đặt lại.
+
 Để thử đăng nhập local khi khóa Turnstile production không cho phép `localhost`, đặt `LOCAL_TURNSTILE_TEST=true` trong `.env` local rồi chạy lại Compose. Chế độ này dùng [bộ khóa thử nghiệm chính thức của Cloudflare](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) và chỉ hoạt động khi `PUBLIC_APP_URL` có hostname `localhost` hoặc `127.0.0.1`; khóa production trong `.env` không bị thay đổi.
 
 ## Thanh toán payOS

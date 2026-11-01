@@ -323,9 +323,28 @@ class BillingController {
 class UsersController {
   constructor(private readonly s: Services) {}
   private admin(req: AuthedRequest) { if (!['SUPER_ADMIN', 'ADMIN'].includes(req.principal!.role)) fail(403, 'Forbidden'); }
-  @Get() async list(@Req() req: AuthedRequest) { this.admin(req); return this.s.db.user.findMany({ where: { deletedAt: null }, select: { id: true, email: true, username: true, role: true, active: true, ttsProvider: true, maxAiReplyWords: true, createdAt: true }, take: 100 }); }
+  @Get() async list(@Req() req: AuthedRequest) {
+    this.admin(req);
+    const users = await this.s.db.user.findMany({ where: { deletedAt: null }, select: { id: true, email: true, username: true, role: true, active: true, ttsProvider: true, maxAiReplyWords: true, createdAt: true, quota: { select: { maxAiPerDay: true } } }, take: 100 });
+    const day = new Date().toISOString().slice(0, 10);
+    const counts = users.length ? await this.s.redis.mget(...users.map(user => `ai:day:${user.id}:${day}`)) : [];
+    return users.map((user, index) => ({ id: user.id, email: user.email, username: user.username, role: user.role, active: user.active, ttsProvider: user.ttsProvider, maxAiReplyWords: user.maxAiReplyWords, createdAt: user.createdAt, aiUsageDay: day, aiUsedToday: Number(counts[index] ?? 0), aiLimitToday: user.quota?.maxAiPerDay ?? 100, canResetAiUsage: user.role !== 'SUPER_ADMIN' || req.principal!.role === 'SUPER_ADMIN' }));
+  }
   @Post() async create(@Req() req: AuthedRequest, @Body() body: unknown) { this.admin(req); const d = parse(z.object({ email: z.email(), username: z.string().min(3), password: z.string().min(16), role: z.enum(['USER','VIEWER','ADMIN']).default('USER') }), body); if (d.role === 'ADMIN' && req.principal!.role !== 'SUPER_ADMIN') fail(403, 'Forbidden'); const user = await this.s.db.user.create({ data: { email: d.email, username: d.username, passwordHash: await argon2.hash(d.password, { type: argon2.argon2id }), role: d.role } }); await this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.create', targetId: user.id } }); return { id: user.id }; }
   @Patch(':id') async update(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.admin(req); parse(uuid, id); const d = parse(z.object({ active: z.boolean().optional(), role: z.enum(['USER','VIEWER','ADMIN']).optional(), ttsProvider: z.enum(['google','local']).optional(), maxAiReplyWords: z.number().int().min(15).max(100).optional() }), body); const target = await this.s.db.user.findUnique({ where: { id } }); if (!target || (target.role === 'SUPER_ADMIN' && (d.active !== undefined || d.role !== undefined)) || (d.role === 'ADMIN' && req.principal!.role !== 'SUPER_ADMIN')) fail(403, 'Forbidden'); await this.s.db.user.update({ where: { id }, data: d }); if (d.active === false) await this.s.db.authSession.updateMany({ where: { userId: id }, data: { revokedAt: new Date() } }); await this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.update', targetId: id } }); return { ok: true }; }
+  @Post(':id/ai-usage/reset') async resetAiUsage(@Req() req: AuthedRequest, @Param('id') id: string) {
+    this.admin(req);
+    parse(uuid, id);
+    const target = await this.s.db.user.findFirst({ where: { id, deletedAt: null }, select: { role: true } });
+    if (!target) return fail(404, 'User not found');
+    if (target.role === 'SUPER_ADMIN' && req.principal!.role !== 'SUPER_ADMIN') fail(403, 'Forbidden');
+    const day = new Date().toISOString().slice(0, 10);
+    const dayKey = `ai:day:${id}:${day}`;
+    const previousUsed = Number(await this.s.redis.get(dayKey) ?? 0);
+    await this.s.redis.del(dayKey, `${dayKey}:welcome`, `${dayKey}:repeat-comment`);
+    await this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.ai_usage.reset', targetId: id, metadata: { day, previousUsed } } });
+    return { day, used: 0 };
+  }
   @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.admin(req); parse(uuid, id); const target = await this.s.db.user.findUnique({ where: { id } }); if (!target || target.role === 'SUPER_ADMIN') fail(403, 'Forbidden'); const now = new Date(); await this.s.db.$transaction([this.s.db.overlayToken.updateMany({ where: { live: { ownerId: id } }, data: { revokedAt: now } }), this.s.db.liveChannel.updateMany({ where: { ownerId: id }, data: { deletedAt: now, status: 'stopped' } }), this.s.db.user.update({ where: { id }, data: { active: false, deletedAt: now } }), this.s.db.authSession.updateMany({ where: { userId: id }, data: { revokedAt: now } }), this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.delete', targetId: id } })]); return { ok: true }; }
 }
 

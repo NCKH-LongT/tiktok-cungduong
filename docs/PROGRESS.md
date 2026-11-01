@@ -19,6 +19,10 @@ This repository is a working foundation and simulator vertical slice, **not a co
 
 The simulator is never counted as a real TikTok LIVE. Google TTS produced MP3 in the local Compose smoke test; audible output in OBS remains unverified.
 
+## Manual admin AI usage reset, 2026-11-01
+
+The admin account page lists each account's UTC-day AI usage and limit. An admin can manually reset the target account's current-day AI count and the welcome/repeat-comment daily subcounts; all of that account's LIVE channels share the refreshed allowance. Google TTS usage, per-minute throttles and AI history remain intact. The API requires an admin session, restricts resetting a super-admin account to super-admins, and records an audit entry containing the previous count. A local Docker integration test seeded all three AI counters for a temporary user, confirmed a normal user received HTTP 403, reset as admin, verified all AI counters and the displayed count returned to zero, checked the TTS counter remained unchanged, and found the audit entry.
+
 ## Phone overlay and donor effects, 2026-11-01
 
 The overlay now centers a fixed 9:16 scene in any browser viewport; OBS Browser Source should use 1080 × 1920. The TikTok worker forwards HTTPS gift images from TikTok events. New completed gifts fall on a random upper side of the temple with image size based on total coins; missing images show the gift name. The dashboard Simulator accepts a gift image URL for visual testing. Active donors regain their cumulative golden halo and slower name-badge fade from the API snapshot after F5. Old gifts are not replayed. Local voices appear before Google voices in Voice & Audio. Unit tests, TypeScript checks, production and Docker builds passed. A local Docker smoke verified Socket.IO gift images and the 100-coin snapshot total; headless Chrome measured a 405 × 720 scene in a 1280 × 720 window and a 540 × 960 scene in a 540 × 960 window, and observed a falling gift after a new event. Real TikTok gift images and OBS appearance still need a live operator check.
