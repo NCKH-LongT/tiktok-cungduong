@@ -8,12 +8,15 @@ export function normalizeVietnamese(value: string): string {
 export function classifyComment(value: unknown): PriorityIntent {
   if (typeof value !== 'string' || !value.trim()) return 'OTHER';
   const normalized = normalizeVietnamese(value);
-  if (/(?:^|nammo)adidaphat(?:$|[a-z])/.test(normalized) && normalized.length < 120) return 'BUDDHA_CHANT';
-  if (/\b(cau|mong|chuc)\b/i.test(value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd'))) {
-    if (/(cha me|gia dinh|nguoi than|ca nha|bo me)/.test(value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, ''))) return 'PRAYER_FAMILY';
-    if (/(suc khoe|manh khoe|khoe manh)/.test(value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, ''))) return 'PRAYER_HEALTH';
-    if (/(thi|hoc|do dat)/.test(value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, ''))) return 'PRAYER_STUDY';
-    if (/(cong viec|lam an)/.test(value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, ''))) return 'PRAYER_WORK';
+  const folded = value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase();
+  const words = folded.replace(/[^a-z0-9]+/g, ' ').trim();
+  if (/^(?:nammo)?adidaphat$/.test(normalized) ||
+      /^(?:nam\s*mo\s*)?a\s*di\s*da\s*phat(?:\s|$)/.test(words)) return 'BUDDHA_CHANT';
+  if (/(?:^|\s)(?:cau|mong|chuc)(?:\s|$)/.test(words)) {
+    if (/\b(?:cha me|gia dinh|nguoi than|ca nha|bo me)\b/.test(words)) return 'PRAYER_FAMILY';
+    if (/\b(?:suc khoe|manh khoe|khoe manh)\b/.test(words)) return 'PRAYER_HEALTH';
+    if (/\b(?:thi|hoc|do dat)\b/.test(words)) return 'PRAYER_STUDY';
+    if (/\b(?:cong viec|lam an)\b/.test(words)) return 'PRAYER_WORK';
     return 'PRAYER_PEACE';
   }
   return /[?？]$/.test(value.trim()) ? 'QUESTION' : 'OTHER';

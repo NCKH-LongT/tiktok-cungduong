@@ -25,3 +25,12 @@ test('batch speech includes each unique donor once', () => {
   assert.equal(text.split('An').length - 1, 1);
   assert.match(text, /Bình/);
 });
+
+test('recognizes accented and unaccented prayer and avoids unrelated substring matches', () => {
+  assert.equal(classifyComment('Cầu cha mẹ bình an'), 'PRAYER_FAMILY');
+  assert.equal(classifyComment('Mong gia đình mạnh khỏe'), 'PRAYER_FAMILY');
+  assert.equal(classifyComment('Cau gia dinh binh an'), 'PRAYER_FAMILY');
+  assert.equal(classifyComment('Chúc công việc thuận lợi'), 'PRAYER_WORK');
+  assert.equal(classifyComment('Cầu sức khỏe'), 'PRAYER_HEALTH');
+  assert.equal(classifyComment('Học hỏi kiến thức'), 'OTHER');
+});
