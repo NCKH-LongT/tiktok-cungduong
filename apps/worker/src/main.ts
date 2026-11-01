@@ -120,7 +120,7 @@ async function runAI() {
   }
   const worker = new Worker('speech', async job => {
     const input = job.data.event as LiveEvent;
-    const liveAtStart = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { ownerId: true, deletedAt: true, status: true, owner: { select: { role: true, accessUntil: true } } } });
+    const liveAtStart = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { ownerId: true, deletedAt: true, status: true, owner: { select: { role: true, accessUntil: true, ttsProvider: true } } } });
     if (!liveAtStart || liveAtStart.deletedAt || (input.source === 'tiktok' && (liveAtStart.status !== 'connected' || !hasLiveAccess(liveAtStart.owner.role, liveAtStart.owner.accessUntil)))) return;
     const config = await db.aIConfiguration.findUnique({ where: { liveId: input.liveId } });
     if (!config?.enabled) return;
@@ -183,34 +183,37 @@ async function runAI() {
     const voice = await db.audioConfiguration.findUnique({ where: { liveId: input.liveId } });
     const voiceEnabled = voice?.ttsEnabled !== false;
     let voiceStatus = voiceEnabled ? 'tts_unconfigured' : 'voice_off';
-    if (voiceEnabled && tts) {
-      try {
-        const quota = await db.userQuota.findUnique({ where: { userId: liveAtStart.ownerId }, select: { maxTtsPerDay: true } });
-        const dayKey = `tts:day:${liveAtStart.ownerId}:${new Date().toISOString().slice(0, 10)}`;
-        if (!(await reserveDailyTtsSlot(redis, dayKey, quota?.maxTtsPerDay ?? 100))) voiceStatus = 'tts_daily_limit';
-        else {
+    const providers = liveAtStart.owner.ttsProvider === 'local' ? ['local', 'google'] as const : ['google', 'local'] as const;
+    for (const provider of voiceEnabled ? providers : []) {
+      if (provider === 'google') {
+        if (!tts) { voiceStatus = 'tts_unconfigured'; continue; }
+        try {
+          const quota = await db.userQuota.findUnique({ where: { userId: liveAtStart.ownerId }, select: { maxTtsPerDay: true } });
+          const dayKey = `tts:day:${liveAtStart.ownerId}:${new Date().toISOString().slice(0, 10)}`;
+          if (!(await reserveDailyTtsSlot(redis, dayKey, quota?.maxTtsPerDay ?? 100))) { voiceStatus = 'tts_daily_limit'; continue; }
           await waitForProviderSlot(redis, 'tts', ttsRpm);
           const [result] = await tts.synthesizeSpeech({ input: { text }, voice: { languageCode: 'vi-VN', name: voice?.voiceId ?? 'vi-VN-Standard-A' }, audioConfig: { audioEncoding: 'MP3', speakingRate: voice?.speakingRate ?? 1, pitch: voice?.pitch ?? 0 } }, { timeout: 15000 });
           const mp3 = typeof result.audioContent === 'string' ? Buffer.from(result.audioContent, 'base64') : Buffer.from(result.audioContent ?? []);
           if (!isValidMp3(mp3)) throw new Error('Google TTS returned invalid MP3');
           audio = mp3.toString('base64');
-          voiceStatus = 'audio_ready';
+          voiceStatus = usedFallback ? 'fallback_audio' : 'audio_ready';
+        } catch (error) {
+          const code = Number((error as { code?: unknown })?.code);
+          voiceStatus = code === 8 || code === 429 ? 'tts_provider_limit' : 'tts_error';
+          console.warn('Google TTS unavailable; trying another voice source:', errorMessage(error));
         }
-      } catch (error) {
-        const code = Number((error as { code?: unknown })?.code);
-        voiceStatus = code === 8 || code === 429 ? 'tts_provider_limit' : 'tts_error';
-        console.warn('Google TTS unavailable; trying local Vietnamese TTS:', errorMessage(error));
+      } else if (process.env.LOCAL_TTS_URL) {
+        try {
+          audio = await synthesizeLocalSpeech(process.env.LOCAL_TTS_URL, text, voice?.speakingRate ?? 1);
+          voiceStatus = usedFallback ? 'fallback_local_audio' : 'local_audio_ready';
+        } catch (error) {
+          voiceStatus = 'local_tts_error';
+          console.warn('Local Vietnamese TTS unavailable; trying another voice source:', errorMessage(error));
+        }
       }
+      if (audio) break;
     }
-    if (voiceEnabled && !audio && process.env.LOCAL_TTS_URL) {
-      try {
-        audio = await synthesizeLocalSpeech(process.env.LOCAL_TTS_URL, text, voice?.speakingRate ?? 1);
-        voiceStatus = usedFallback ? 'fallback_local_audio' : 'local_audio_ready';
-      } catch (error) {
-        console.warn('Local Vietnamese TTS unavailable; trying browser speech:', errorMessage(error));
-      }
-    }
-    await db.aIInteraction.update({ where: { id: interaction.id }, data: { status: audio && usedFallback && voiceStatus === 'audio_ready' ? 'fallback_audio' : voiceStatus } });
+    await db.aIInteraction.update({ where: { id: interaction.id }, data: { status: voiceStatus } });
     if (input.source === 'tiktok') {
       const live = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { status: true, owner: { select: { role: true, accessUntil: true } } } });
       if (live?.status !== 'connected' || !hasLiveAccess(live.owner.role, live.owner.accessUntil)) return;

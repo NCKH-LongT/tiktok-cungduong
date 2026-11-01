@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 
 type Reply = { id: string; answer: string | null; status: string; createdAt: string };
 type Usage = { day: string; used: number; limit: number; remaining: number; ttsUsed?: number; ttsLimit?: number; ttsRemaining?: number };
-const statusLabel: Record<string, string> = { completed: 'Đã tạo câu trả lời', audio_ready: 'Google TTS · MP3 sẵn sàng', local_audio_ready: 'Giọng đọc local · MP3 sẵn sàng', fallback_local_audio: 'Gemini tạm bận · giọng local sẵn sàng', fallback_audio: 'Gemini tạm bận · Google TTS sẵn sàng', browser_voice: 'Đang dùng giọng trình duyệt', voice_off: 'Giọng AI đã tắt', fallback: 'Gemini tạm bận', tts_unconfigured: 'Google TTS chưa cấu hình · thử giọng trình duyệt', tts_daily_limit: 'Hết lượt Google TTS · thử giọng trình duyệt', tts_provider_limit: 'Google TTS giới hạn lượt · thử giọng trình duyệt', tts_error: 'Google TTS lỗi · thử giọng trình duyệt' };
+const statusLabel: Record<string, string> = { completed: 'Đã tạo câu trả lời', audio_ready: 'Google TTS · MP3 sẵn sàng', local_audio_ready: 'Giọng đọc local · MP3 sẵn sàng', fallback_local_audio: 'Gemini tạm bận · giọng local sẵn sàng', fallback_audio: 'Gemini tạm bận · Google TTS sẵn sàng', browser_voice: 'Đang dùng giọng trình duyệt', voice_off: 'Giọng AI đã tắt', fallback: 'Gemini tạm bận', tts_unconfigured: 'Google TTS chưa cấu hình · thử giọng trình duyệt', tts_daily_limit: 'Hết lượt Google TTS · thử giọng trình duyệt', tts_provider_limit: 'Google TTS giới hạn lượt · thử giọng trình duyệt', tts_error: 'Google TTS lỗi · thử giọng trình duyệt', local_tts_error: 'Local TTS lỗi · thử giọng trình duyệt' };
 
 export default function AIActivity({ id }: { id: string }) {
   const [replies, setReplies] = useState<Reply[]>([]);

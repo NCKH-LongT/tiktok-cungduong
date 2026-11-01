@@ -32,6 +32,7 @@ model User {
   username     String        @unique
   passwordHash String
   role         RoleCode      @default(USER)
+  ttsProvider  String        @default("google")
   active       Boolean       @default(true)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt

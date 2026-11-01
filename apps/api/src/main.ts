@@ -15,6 +15,8 @@ import { giftDedupKey, hasLiveAccess, liveEventSchema, shouldAnswerComment, type
 import { encryptGeminiKey } from '@cd/shared/gemini-key';
 import { DAY_PASS_VND, newOrderCode, payOSClient, settlePaidOrder } from './billing.js';
 import { revenueWindow } from './revenue.js';
+import { configuredOrigins } from './origins.js';
+import { turnstileKeys } from './turnstile.js';
 import type { Request, Response } from 'express';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -206,7 +208,7 @@ class HealthController {
   constructor(private readonly s: Services) {}
   @Get('health') health() { return { status: 'ok' }; }
   @Get('ready') async ready() { await this.s.db.$queryRaw`SELECT 1`; await this.s.redis.ping(); return { status: 'ready' }; }
-  @Get('public-config') config() { return { turnstileSiteKey: process.env.TURNSTILE_SITE_KEY ?? '' }; }
+  @Get('public-config') config() { return { turnstileSiteKey: turnstileKeys().siteKey }; }
 }
 
 @Controller('auth')
@@ -218,9 +220,10 @@ class AuthController {
     const attempts = await this.s.redis.incr(key);
     if (attempts === 1) await this.s.redis.expire(key, 900);
     if (attempts > 10) fail(429, 'Too many login attempts');
-    if (process.env.TURNSTILE_SECRET_KEY) {
+    const turnstileSecretKey = turnstileKeys().secretKey;
+    if (turnstileSecretKey) {
       if (!data.turnstileToken) fail(400, 'Turnstile required');
-      const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: new URLSearchParams({ secret: process.env.TURNSTILE_SECRET_KEY, response: data.turnstileToken! }), signal: AbortSignal.timeout(5000) });
+      const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: new URLSearchParams({ secret: turnstileSecretKey, response: data.turnstileToken! }), signal: AbortSignal.timeout(5000) });
       if (!response.ok) fail(502, 'Không kết nối được dịch vụ Turnstile');
       const verification = await response.json() as { success: boolean; 'error-codes'?: string[] };
       if (!verification.success) {
@@ -319,9 +322,9 @@ class BillingController {
 class UsersController {
   constructor(private readonly s: Services) {}
   private admin(req: AuthedRequest) { if (!['SUPER_ADMIN', 'ADMIN'].includes(req.principal!.role)) fail(403, 'Forbidden'); }
-  @Get() async list(@Req() req: AuthedRequest) { this.admin(req); return this.s.db.user.findMany({ where: { deletedAt: null }, select: { id: true, email: true, username: true, role: true, active: true, createdAt: true }, take: 100 }); }
+  @Get() async list(@Req() req: AuthedRequest) { this.admin(req); return this.s.db.user.findMany({ where: { deletedAt: null }, select: { id: true, email: true, username: true, role: true, active: true, ttsProvider: true, createdAt: true }, take: 100 }); }
   @Post() async create(@Req() req: AuthedRequest, @Body() body: unknown) { this.admin(req); const d = parse(z.object({ email: z.email(), username: z.string().min(3), password: z.string().min(16), role: z.enum(['USER','VIEWER','ADMIN']).default('USER') }), body); if (d.role === 'ADMIN' && req.principal!.role !== 'SUPER_ADMIN') fail(403, 'Forbidden'); const user = await this.s.db.user.create({ data: { email: d.email, username: d.username, passwordHash: await argon2.hash(d.password, { type: argon2.argon2id }), role: d.role } }); await this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.create', targetId: user.id } }); return { id: user.id }; }
-  @Patch(':id') async update(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.admin(req); parse(uuid, id); const d = parse(z.object({ active: z.boolean().optional(), role: z.enum(['USER','VIEWER','ADMIN']).optional() }), body); const target = await this.s.db.user.findUnique({ where: { id } }); if (!target || target.role === 'SUPER_ADMIN' || (d.role === 'ADMIN' && req.principal!.role !== 'SUPER_ADMIN')) fail(403, 'Forbidden'); await this.s.db.user.update({ where: { id }, data: d }); if (d.active === false) await this.s.db.authSession.updateMany({ where: { userId: id }, data: { revokedAt: new Date() } }); await this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.update', targetId: id } }); return { ok: true }; }
+  @Patch(':id') async update(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.admin(req); parse(uuid, id); const d = parse(z.object({ active: z.boolean().optional(), role: z.enum(['USER','VIEWER','ADMIN']).optional(), ttsProvider: z.enum(['google','local']).optional() }), body); const target = await this.s.db.user.findUnique({ where: { id } }); if (!target || (target.role === 'SUPER_ADMIN' && (d.active !== undefined || d.role !== undefined)) || (d.role === 'ADMIN' && req.principal!.role !== 'SUPER_ADMIN')) fail(403, 'Forbidden'); await this.s.db.user.update({ where: { id }, data: d }); if (d.active === false) await this.s.db.authSession.updateMany({ where: { userId: id }, data: { revokedAt: new Date() } }); await this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.update', targetId: id } }); return { ok: true }; }
   @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.admin(req); parse(uuid, id); const target = await this.s.db.user.findUnique({ where: { id } }); if (!target || target.role === 'SUPER_ADMIN') fail(403, 'Forbidden'); const now = new Date(); await this.s.db.$transaction([this.s.db.overlayToken.updateMany({ where: { live: { ownerId: id } }, data: { revokedAt: now } }), this.s.db.liveChannel.updateMany({ where: { ownerId: id }, data: { deletedAt: now, status: 'stopped' } }), this.s.db.user.update({ where: { id }, data: { active: false, deletedAt: now } }), this.s.db.authSession.updateMany({ where: { userId: id }, data: { revokedAt: now } }), this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.delete', targetId: id } })]); return { ok: true }; }
 }
 
@@ -488,7 +491,7 @@ class AppModule {}
 async function main() {
   const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
   app.use(helmet()); app.use(cookieParser());
-  const origins = (process.env.CORS_ORIGINS ?? process.env.PUBLIC_APP_URL ?? 'http://localhost:3000').split(',');
+  const origins = configuredOrigins(process.env.CORS_ORIGINS ?? process.env.PUBLIC_APP_URL ?? 'http://localhost:3000');
   app.enableCors({ origin: origins, credentials: true });
   app.use((req: Request, _res: Response, next: () => void) => { if (req.path !== '/billing/payos/webhook' && ['POST','PUT','PATCH','DELETE'].includes(req.method) && req.headers.origin && !origins.includes(req.headers.origin)) fail(403, 'Invalid origin'); next(); });
   const s = app.get(Services);

@@ -1,0 +1,1 @@
+ALTER TABLE "User" ADD COLUMN "ttsProvider" TEXT NOT NULL DEFAULT 'google';
