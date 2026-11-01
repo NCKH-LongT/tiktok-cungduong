@@ -7,6 +7,8 @@ coverage/
 !.env.example
 *.log
 *.tsbuildinfo
+__pycache__/
+*.pyc
 .docker-build-cache.tar
 .docker-cache-work.*/
 ci-logs/

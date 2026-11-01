@@ -7,6 +7,8 @@ node_modules
 secrets
 gcp-tts-sa.json
 *.log
+__pycache__
+*.pyc
 .docker-build-cache.tar
 .docker-cache-work.*/
 ci-logs/

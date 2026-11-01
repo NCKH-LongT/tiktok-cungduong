@@ -62,7 +62,7 @@ export default function Admin() {
   return <main className="shell">
     <a href="/">← Dashboard</a>
     <h1>Quản trị tài khoản</h1>
-    <p><a href="/admin/revenue">Xem thống kê doanh thu →</a></p>
+    <p><a href="/admin/revenue">Xem thống kê doanh thu →</a> · <a href="/admin/battle-assets">Battle Arena Sprite Studio →</a></p>
     {error && <p className="error" role="alert">{error}</p>}
     {notice && <p className="muted" role="status">{notice}</p>}
     <div className="split">
