@@ -225,7 +225,12 @@ async function runAI() {
       const live = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { status: true, owner: { select: { role: true, accessUntil: true } } } });
       if (live?.status !== 'connected' || !hasLiveAccess(live.owner.role, live.owner.accessUntil)) return;
     }
-    if (await db.liveChannel.findFirst({ where: { id: input.liveId, deletedAt: null }, select: { id: true } })) await redis.publish('speech.ready', JSON.stringify({ liveId: input.liveId, text, audio, voiceEnabled, sourceEventId: input.eventId, source: input.source }));
+    if (await db.liveChannel.findFirst({ where: { id: input.liveId, deletedAt: null }, select: { id: true } })) {
+      // Best-effort once-only playback for delayed batches, including BullMQ retries.
+      const mayPublish = !batchKey || await redis.set(`ai:batch:delivered:${batchKey}`, '1', 'EX', 86400, 'NX');
+      if (mayPublish) await redis.publish('speech.ready', JSON.stringify({ liveId: input.liveId, text, audio, voiceEnabled, sourceEventId: batchKey ?? input.eventId, source: input.source }));
+      if (batchKey) await redis.del(batchKey);
+    }
   }, { connection: redis, concurrency: 1 });
   async function removeDeletedJob(job: { data: { event?: { liveId?: string } }; remove: () => Promise<unknown> } | undefined) {
     const liveId = job?.data?.event?.liveId;
