@@ -1,5 +1,11 @@
 # Progress and acceptance status
 
+## Gift thanks, focus badge and per-user AI limits, 2026-11-02 (`main`)
+
+Lời cảm ơn quà đã phân biệt một người tặng (“phật tử”) và nhiều người tặng (“các phật tử”), kể cả câu chúc kết. Khi camera zoom vào người vừa tặng, overlay hiển thị bảng tên riêng ở lớp phía trước, cố định trong khung 9:16; bảng tên đi theo nhân vật được ẩn trong lúc zoom để không chồng lên nhau. Trang `/admin` cho phép đặt hạn mức câu trả lời AI/ngày cho từng tài khoản từ 0 đến 100.000 (mặc định 100); thay đổi áp dụng ngay cho lượt kế tiếp và có audit log. Lượt bị chặn do hết hạn mức không tăng bộ đếm đã dùng.
+
+Unit test, typecheck và build web đạt. Docker smoke riêng xác nhận câu cảm ơn một/hai người tặng và hạn mức 2→3→4; Chrome headless kiểm tra người tặng thứ 41 trong cảnh đông vẫn có bảng tên sáng rõ ở trong khung. Chưa kiểm tra âm thanh và hình ảnh trên LIVE TikTok thật hoặc OBS sau khi deploy.
+
 ## Farm Công Đức and AI batching, 2026-11-02 (`main`)
 
 Combo quà TikTok giờ được nhận diện theo phiên LIVE; nếu TikTok thiếu group ID, worker theo dõi chuỗi quà ngắn của từng người và loại quà. Số CĐ lấy theo tổng xu của combo, không cộng lặp các mốc x20→x30. Bảng CĐ, thống kê quà và hào quang chỉ lấy dữ liệu từ lần kết nối thành công gần nhất, nên LIVE mới bắt đầu từ 0; lịch sử quà vẫn lưu trong database. Quà rơi có vị trí, độ lệch, góc xoay và thời gian ngẫu nhiên. Khi cảnh đầy, người tặng quà chưa có nhân vật được cấp chỗ ngay; camera chuyển tới người đó và bảng tên luôn sáng, nằm trên bảng CĐ khi zoom.

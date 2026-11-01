@@ -35,6 +35,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   const [musicVolume, setMusicVolume] = useState(30);
   const [livePlaying, setLivePlaying] = useState(false);
   const [badges, setBadges] = useState<Badge[]>([]);
+  const [focusedBadge, setFocusedBadge] = useState<Badge | null>(null);
   const [voiceBlocked, setVoiceBlocked] = useState(false);
   const [voiceReady, setVoiceReady] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
@@ -136,7 +137,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       voicePlaybackBlocked = false;
       activeGift = null; focusedKey = '';
       for (const person of people.values()) { scene.removeChild(person.body); person.body.destroy({ children: true }); seats[person.seat].occupied = false; }
-      people.clear(); badgeRefs.current.clear(); vipViewerKeys.clear(); giftCoinsByViewer.clear(); setBadges([]); setLeaders([]); setPrayers([]); setFallingGifts([]); setSpeech('');
+      people.clear(); badgeRefs.current.clear(); vipViewerKeys.clear(); giftCoinsByViewer.clear(); setBadges([]); setFocusedBadge(null); setLeaders([]); setPrayers([]); setFallingGifts([]); setSpeech('');
       try { currentSource?.stop(); } catch { /* The source already finished. */ }
       window.speechSynthesis?.cancel();
       musicPlayer.current?.setVolume(0); musicPlayer.current?.pauseVideo();
@@ -235,6 +236,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           activeGift = { key: person.key, until: Date.now() + 5000 };
           person.totalGiftCoins += points;
           giftCoinsByViewer.set(person.key, person.totalGiftCoins);
+          setFocusedBadge({ key: person.key, name: person.name, avatarUrl: person.avatarUrl, vip: person.totalGiftCoins > 100 || vipViewerKeys.has(person.key) });
           person.highlightUntil = Date.now() + 3500;
           person.badgeBrightAt = Date.now();
           if (person.state === 'kneeling') { person.state = 'bowing'; person.phaseUntil = Date.now() + 1000; setPose(person, 'bowing'); }
@@ -438,6 +440,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
         const focus = activeGift ? people.get(activeGift.key) : undefined;
         if ((focus?.key ?? '') !== focusedKey) {
           focusedKey = focus?.key ?? '';
+          setFocusedBadge(focus ? { key: focus.key, name: focus.name, avatarUrl: focus.avatarUrl, vip: focus.totalGiftCoins > 100 || vipViewerKeys.has(focus.key) } : null);
           for (const person of people.values()) person.body.filters = focusedKey && person.key !== focusedKey && blurFilter ? [blurFilter] : [];
         }
         const targetX = focus?.x ?? 450, targetY = focus ? focus.y - Math.max(130, focus.sprite.height + 25) : 800, scale = focus ? 2.35 : 1;
@@ -457,7 +460,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           badge.style.transform = `translate(-50%, -100%) scale(${Math.min(2.35, camera.scale.x) * .8})`;
           const fadeMs = 10000 + Math.min(50000, Math.log10(person.totalGiftCoins + 1) * 12000);
           const brightness = Math.max(0, 1 - (now - person.badgeBrightAt) / fadeMs);
-          badge.style.opacity = person.state === 'leaving' ? '0' : String(person.key === focusedKey ? 1 : brightness * (focusedKey ? .42 : 1));
+          badge.style.opacity = person.state === 'leaving' || person.key === focusedKey ? '0' : String(brightness * (focusedKey ? .42 : 1));
           badge.style.zIndex = person.key === focusedKey ? '8' : '1';
           badge.style.filter = focusedKey && person.key !== focusedKey ? 'blur(2px)' : '';
         }
@@ -588,6 +591,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       {gift.imageUrl ? <img src={gift.imageUrl} alt={gift.name} referrerPolicy="no-referrer" onError={event => { event.currentTarget.style.display = 'none'; event.currentTarget.nextElementSibling?.classList.add(styles.giftFallbackVisible); }} /> : null}
       <span className={gift.imageUrl ? styles.giftFallback : styles.giftFallbackVisible}>{gift.name}</span>
     </div>)}
+    {focusedBadge && <div className={styles.focusBadge}><BuddhistUserBadge username={focusedBadge.name} avatarUrl={focusedBadge.avatarUrl} vip={focusedBadge.vip} /></div>}
     {status && <div style={{ position: 'absolute', top: 20, left: 20, padding: 10, background: '#1b140dcc', borderRadius: 10, color: '#fff' }}>{status}</div>}
     <div style={{ position: 'absolute', zIndex: 3, top: '11%', right: '2%', width: '31%', padding: '1.2%', background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', boxSizing: 'border-box', textAlign: 'center', fontSize: '.85em' }}>
       <strong>Bảng Công Đức</strong>

@@ -27,12 +27,14 @@ export function giftQuantityDelta(previous: number, incoming: number): number {
   return Math.max(0, incoming - Math.max(0, previous));
 }
 
-export function buildBatchSpeech(type: 'gift' | 'chant' | 'prayer', names: string[], giftName = ''): string {
+export function buildBatchSpeech(type: 'gift' | 'chant' | 'prayer', names: string[], giftName = '', participantCount = 0): string {
   const unique = [...new Set(names.map(name => name.trim().slice(0, 60)).filter(Boolean))];
   const shown = unique.slice(0, 5).join(', ');
-  const rest = unique.length > 5 ? ` và ${unique.length - 5} phật tử khác` : '';
-  const audience = shown ? `các phật tử ${shown}${rest}` : 'quý phật tử';
-  if (type === 'gift') return `Nam mô A Di Đà Phật. Xin tri ân ${audience} đã gửi tặng ${giftName.slice(0, 60) || 'quà'}. Kính chúc quý vị thân tâm an lạc.`;
+  const count = Math.max(unique.length, participantCount);
+  const remaining = count - Math.min(unique.length, 5);
+  const rest = remaining > 0 ? ` và ${remaining} phật tử khác` : '';
+  const audience = count === 1 ? `phật tử ${shown}` : shown ? `các phật tử ${shown}${rest}` : 'quý phật tử';
+  if (type === 'gift') return `Nam mô A Di Đà Phật. Xin tri ân ${audience} đã gửi tặng ${giftName.slice(0, 60) || 'quà'}. ${count === 1 ? `Kính chúc ${shown} thân tâm an lạc.` : 'Kính chúc quý vị thân tâm an lạc.'}`;
   if (type === 'chant') return `Nam mô A Di Đà Phật. Xin cảm niệm ${audience} đã cùng niệm Phật. Kính chúc quý vị bình an.`;
   return `Nam mô A Di Đà Phật. Xin gửi lời cầu chúc bình an và sức khỏe đến ${audience} và gia đình.`;
 }

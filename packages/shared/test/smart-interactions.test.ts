@@ -25,3 +25,11 @@ test('batch speech includes each unique donor once', () => {
   assert.equal(text.split('An').length - 1, 1);
   assert.match(text, /Bình/);
 });
+test('gift thanks uses singular wording for one donor and plural for several', () => {
+  const single = buildBatchSpeech('gift', ['An', 'An'], 'Hoa hồng');
+  const many = buildBatchSpeech('gift', ['An', 'Bình'], 'Hoa hồng');
+  assert.match(single, /tri ân phật tử An/);
+  assert.doesNotMatch(single, /các phật tử|quý vị/);
+  assert.match(many, /tri ân các phật tử An, Bình/);
+  assert.match(buildBatchSpeech('gift', ['An', 'An'], 'Hoa hồng', 2), /tri ân các phật tử An và 1 phật tử khác/);
+});

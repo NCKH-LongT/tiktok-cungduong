@@ -14,6 +14,7 @@ export default function Admin() {
   const [password, setPassword] = useState('');
   const [busyId, setBusyId] = useState('');
   const [replyLimits, setReplyLimits] = useState<Record<string, string>>({});
+  const [aiLimits, setAiLimits] = useState<Record<string, string>>({});
 
   async function load() {
     const response = await fetch('/api/users', { cache: 'no-store' });
@@ -34,14 +35,18 @@ export default function Admin() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Không tạo được tài khoản.'); }
   }
 
-  async function update(user: User, changes: { active?: boolean; ttsProvider?: TtsProvider; maxAiReplyWords?: number }) {
+  async function update(user: User, changes: { active?: boolean; ttsProvider?: TtsProvider; maxAiReplyWords?: number; maxAiPerDay?: number }) {
     setBusyId(user.id);
-    setError('');
+    setError(''); setNotice('');
     try {
       const response = await fetch(`/api/users/${user.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(changes) });
       if (!response.ok) throw new Error((await response.json() as { error?: string }).error ?? 'Không lưu được thay đổi.');
       await load();
       if (changes.maxAiReplyWords !== undefined) setReplyLimits(current => { const next = { ...current }; delete next[user.id]; return next; });
+      if (changes.maxAiPerDay !== undefined) {
+        setAiLimits(current => { const next = { ...current }; delete next[user.id]; return next; });
+        setNotice(`Đã đặt giới hạn AI của ${user.email} thành ${changes.maxAiPerDay} lượt/ngày.`);
+      }
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Không lưu được thay đổi.'); }
     finally { setBusyId(''); }
   }
@@ -90,6 +95,10 @@ export default function Admin() {
             <input type="number" min="15" max="100" value={replyLimits[user.id] ?? user.maxAiReplyWords} disabled={busyId === user.id} onChange={event => setReplyLimits(current => ({ ...current, [user.id]: event.target.value }))} style={{ width: 85 }} />
           </label>
           <button disabled={busyId === user.id || replyLimits[user.id] === undefined || !Number.isInteger(Number(replyLimits[user.id])) || Number(replyLimits[user.id]) < 15 || Number(replyLimits[user.id]) > 100} onClick={() => void update(user, { maxAiReplyWords: Number(replyLimits[user.id]) })}>Lưu số từ</button>
+          <label>Giới hạn AI mỗi ngày (lượt)
+            <input type="number" min="0" max="100000" value={aiLimits[user.id] ?? user.aiLimitToday} disabled={busyId === user.id || !user.canResetAiUsage} onChange={event => setAiLimits(current => ({ ...current, [user.id]: event.target.value }))} style={{ width: 100 }} />
+          </label>
+          {user.canResetAiUsage && <button disabled={busyId === user.id || aiLimits[user.id] === undefined || aiLimits[user.id].trim() === '' || !Number.isInteger(Number(aiLimits[user.id])) || Number(aiLimits[user.id]) < 0 || Number(aiLimits[user.id]) > 100000} onClick={() => void update(user, { maxAiPerDay: Number(aiLimits[user.id]) })}>Lưu hạn mức</button>}
           <span title={`Ngày UTC: ${user.aiUsageDay}`}>Lượt AI hôm nay: {user.aiUsedToday}/{user.aiLimitToday}</span>
           {user.canResetAiUsage && <button disabled={busyId === user.id} onClick={() => void resetAiUsage(user)}>Đặt lại lượt AI</button>}
           {user.role !== 'SUPER_ADMIN' && <button disabled={busyId === user.id} onClick={() => void update(user, { active: !user.active })}>{user.active ? 'Khóa' : 'Mở khóa'}</button>}

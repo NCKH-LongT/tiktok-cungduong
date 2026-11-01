@@ -147,7 +147,7 @@ async function runAI() {
     let prompt = '';
     if (batchKey && batchType && batchType !== 'comment') {
       const uniqueNames = [...new Map(batchMembers.map(member => [member.userKey, member.nickname])).values()];
-      text = buildBatchSpeech(batchType, uniqueNames, batchMembers[0]?.giftName);
+      text = buildBatchSpeech(batchType, uniqueNames, batchMembers[0]?.giftName, uniqueNames.length);
       usedFallback = true; // deterministic template: no Gemini token usage
       prompt = `Batch ${batchType}, participants: ${uniqueNames.length}`;
     } else if (input.eventType === 'gift.received') {

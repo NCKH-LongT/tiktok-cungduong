@@ -22,6 +22,9 @@ import { validYouTubeVideoUrl } from './youtube.js';
 import type { Request, Response } from 'express';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+async function reserveAiSlot(redis: Redis, key: string, limit: number): Promise<boolean> {
+  return Number(await redis.eval("local used=tonumber(redis.call('get', KEYS[1]) or '0'); if used>=tonumber(ARGV[1]) then return 0 end; used=redis.call('incr', KEYS[1]); if used==1 then redis.call('expire', KEYS[1], 172800) end; return 1", 1, key, limit)) === 1;
+}
 const fail = (status: number, message: string): never => { throw new HttpException({ error: message }, status); };
 const parse = <T extends z.ZodType>(schema: T, input: unknown): z.infer<T> => {
   const result = schema.safeParse(input);
@@ -203,9 +206,7 @@ class Services {
         if (!live) return;
         const quota = await this.db.userQuota.findUnique({ where: { userId: live.ownerId } });
         const dayKey = `ai:day:${live.ownerId}:${new Date().toISOString().slice(0, 10)}`;
-        const count = await this.redis.incr(dayKey);
-        if (count === 1) await this.redis.expire(dayKey, 172800);
-        if (count > (quota?.maxAiPerDay ?? 100)) return;
+        if (!(await reserveAiSlot(this.redis, dayKey, quota?.maxAiPerDay ?? 100))) return;
         const delay = Math.max(250, (windowId + 1) * windowMs - Date.now() + 250);
         await this.speechQueue.add('generate-batch', { batchKey, batchType, liveId: event.liveId, event }, {
           jobId: hash(batchKey), delay, priority: batchType === 'gift' ? 1 : batchType === 'chant' ? 2 : 3,
@@ -242,9 +243,7 @@ class Services {
       if (categoryDayCount === 1) await this.redis.expire(categoryDayKey, 172800);
       if (categoryDayCount > Math.max(1, Math.floor((quota?.maxAiPerDay ?? 100) / 5))) return;
     }
-    const dayCount = await this.redis.incr(dayKey);
-    if (dayCount === 1) await this.redis.expire(dayKey, 172800);
-    if (dayCount > (quota?.maxAiPerDay ?? 100)) return;
+    if (!(await reserveAiSlot(this.redis, dayKey, quota?.maxAiPerDay ?? 100))) return;
     const priority = event.eventType === 'gift.received' ? 1 : firstComment ? 2 : isJoin ? 5 : 3;
     if (isJoin) {
       const created = await this.db.aIWelcome.createMany({ data: [{ liveId: event.liveId, roomKey: roomKey!, userKey }], skipDuplicates: true });
@@ -419,7 +418,19 @@ class UsersController {
     return users.map((user, index) => ({ id: user.id, email: user.email, username: user.username, role: user.role, active: user.active, ttsProvider: user.ttsProvider, maxAiReplyWords: user.maxAiReplyWords, createdAt: user.createdAt, aiUsageDay: day, aiUsedToday: Number(counts[index] ?? 0), aiLimitToday: user.quota?.maxAiPerDay ?? 100, canResetAiUsage: user.role !== 'SUPER_ADMIN' || req.principal!.role === 'SUPER_ADMIN' }));
   }
   @Post() async create(@Req() req: AuthedRequest, @Body() body: unknown) { this.admin(req); const d = parse(z.object({ email: z.email(), username: z.string().min(3), password: z.string().min(16), role: z.enum(['USER','VIEWER','ADMIN']).default('USER') }), body); if (d.role === 'ADMIN' && req.principal!.role !== 'SUPER_ADMIN') fail(403, 'Forbidden'); const user = await this.s.db.user.create({ data: { email: d.email, username: d.username, passwordHash: await argon2.hash(d.password, { type: argon2.argon2id }), role: d.role } }); await this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.create', targetId: user.id } }); return { id: user.id }; }
-  @Patch(':id') async update(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.admin(req); parse(uuid, id); const d = parse(z.object({ active: z.boolean().optional(), role: z.enum(['USER','VIEWER','ADMIN']).optional(), ttsProvider: z.enum(['google','local']).optional(), maxAiReplyWords: z.number().int().min(15).max(100).optional() }), body); const target = await this.s.db.user.findUnique({ where: { id } }); if (!target || (target.role === 'SUPER_ADMIN' && (d.active !== undefined || d.role !== undefined)) || (d.role === 'ADMIN' && req.principal!.role !== 'SUPER_ADMIN')) fail(403, 'Forbidden'); await this.s.db.user.update({ where: { id }, data: d }); if (d.active === false) await this.s.db.authSession.updateMany({ where: { userId: id }, data: { revokedAt: new Date() } }); await this.s.db.auditLog.create({ data: { actorId: req.principal!.id, action: 'user.update', targetId: id } }); return { ok: true }; }
+  @Patch(':id') async update(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) {
+    this.admin(req); parse(uuid, id);
+    const { maxAiPerDay, ...changes } = parse(z.object({ active: z.boolean().optional(), role: z.enum(['USER','VIEWER','ADMIN']).optional(), ttsProvider: z.enum(['google','local']).optional(), maxAiReplyWords: z.number().int().min(15).max(100).optional(), maxAiPerDay: z.number().int().min(0).max(100000).optional() }), body);
+    const target = await this.s.db.user.findFirst({ where: { id, deletedAt: null } });
+    if (!target || (target.role === 'SUPER_ADMIN' && (changes.active !== undefined || changes.role !== undefined || (maxAiPerDay !== undefined && req.principal!.role !== 'SUPER_ADMIN'))) || (changes.role === 'ADMIN' && req.principal!.role !== 'SUPER_ADMIN')) fail(403, 'Forbidden');
+    await this.s.db.$transaction(async tx => {
+      if (Object.keys(changes).length) await tx.user.update({ where: { id }, data: changes });
+      if (maxAiPerDay !== undefined) await tx.userQuota.upsert({ where: { userId: id }, create: { userId: id, maxAiPerDay }, update: { maxAiPerDay } });
+      if (changes.active === false) await tx.authSession.updateMany({ where: { userId: id }, data: { revokedAt: new Date() } });
+      await tx.auditLog.create({ data: { actorId: req.principal!.id, action: maxAiPerDay === undefined ? 'user.update' : 'user.ai_limit.update', targetId: id, metadata: maxAiPerDay === undefined ? undefined : { maxAiPerDay } } });
+    });
+    return { ok: true };
+  }
   @Post(':id/ai-usage/reset') async resetAiUsage(@Req() req: AuthedRequest, @Param('id') id: string) {
     this.admin(req);
     parse(uuid, id);

@@ -25,6 +25,11 @@ test('batch speech includes each unique donor once', () => {
   assert.equal(text.split('An').length - 1, 1);
   assert.match(text, /Bình/);
 });
+test('gift thanks uses singular wording for one donor and plural for several', () => {
+  assert.match(buildBatchSpeech('gift', ['An', 'An'], 'Hoa hồng'), /tri ân phật tử An/);
+  assert.match(buildBatchSpeech('gift', ['An', 'Bình'], 'Hoa hồng'), /tri ân các phật tử An, Bình/);
+  assert.match(buildBatchSpeech('gift', ['An', 'An'], 'Hoa hồng', 2), /tri ân các phật tử An và 1 phật tử khác/);
+});
 
 test('recognizes accented and unaccented prayer and avoids unrelated substring matches', () => {
   assert.equal(classifyComment('Cầu cha mẹ bình an'), 'PRAYER_FAMILY');
