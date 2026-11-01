@@ -162,7 +162,7 @@ class Services {
       if (giftChanged) this.io?.to(`live:${event.liveId}`).emit('gift.leaderboard.changed', { liveId: event.liveId });
       // Thank once on the final combo signal, even if the cumulative count was saved earlier.
       if (event.payload.repeatEnd === false) return true;
-      const firstFinal = await this.redis.set(`gift:final:${key}`, '1', 'EX', 86400, 'NX');
+      const firstFinal = await this.redis.set(`gift:final:${giftDedupKey(event)}`, '1', 'EX', 86400, 'NX');
       if (!firstFinal) return true;
     }
     if (event.source === 'tiktok' || includeSimulatorAI) await this.enqueueAI(event);
