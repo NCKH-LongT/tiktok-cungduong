@@ -493,6 +493,12 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       socket.on('connect', () => setStatus(''));
       socket.on('disconnect', () => setStatus('Mất kết nối · đang thử lại'));
       socket.on('connect_error', () => setStatus('Không thể kết nối socket'));
+      socket.on('gift.leaderboard.changed', () => {
+        void fetch(`/api/overlay/${id}/snapshot?token=${encodeURIComponent(token)}`)
+          .then(response => response.ok ? response.json() : Promise.reject(new Error('snapshot unavailable')))
+          .then(data => setLeaders(data.leaderboard ?? []))
+          .catch(() => {});
+      });
       socket.on('live.event', (event: LiveEvent) => {
         if (event.source === 'tiktok' && !liveActive) return;
         onEvent(event);
