@@ -21,7 +21,7 @@ export function giftDedupKey(event: LiveEvent): string {
   const p = event.payload;
   const combo = typeof p.comboId === 'string' ? p.comboId : '';
   const gift = typeof p.giftId === 'string' ? p.giftId : '';
-  return combo ? `${event.liveId}:${event.user?.id ?? event.user?.uniqueId}:${gift}:${combo}` : event.eventId;
+  return combo ? `${event.liveId}:${event.sessionId ?? 'legacy'}:${event.user?.id ?? event.user?.uniqueId}:${gift}:${combo}` : event.eventId;
 }
 
 export function shouldAnswerComment(value: unknown): boolean {

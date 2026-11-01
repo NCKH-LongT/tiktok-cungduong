@@ -1,5 +1,5 @@
 'use client';
-import { use, useEffect, useRef, useState } from 'react';
+import { use, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import type { Application, Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
 import MusicPlayer, { type YouTubePlayer } from './music';
@@ -11,7 +11,7 @@ type Person = { key: string; name: string; avatarUrl?: string; seat: number; bod
 type Badge = { key: string; name: string; avatarUrl?: string; vip: boolean };
 type Speech = { text: string; audio?: string; source?: string; voiceEnabled?: boolean };
 type Prayer = { id: string; name: string; avatarUrl?: string; text: string; top: number; duration: number };
-type FallingGift = { id: string; name: string; imageUrl?: string; left: number; top: number; size: number; duration: number };
+type FallingGift = { id: string; name: string; imageUrl?: string; left: number; top: number; size: number; duration: number; drift: number; spin: number };
 const WIDTH = 900, HEIGHT = 1600;
 const giftPoints = (payload: Record<string, unknown>) => {
   const coins = Number(payload.estimatedCoins);
@@ -51,7 +51,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     let speechDisplayTimer: ReturnType<typeof setTimeout> | undefined;
     let activeGift: { key: string; until: number } | null = null, focusedKey = '', speaking = false, stopVersion = 0;
     let voicePlaybackBlocked = false;
-    const giftQueue: string[] = [], speechQueue: Speech[] = [];
+    const speechQueue: Speech[] = [];
     const people = new Map<string, Person>();
     const vipViewerKeys = new Set<string>();
     const giftCoinsByViewer = new Map<string, number>();
@@ -121,16 +121,22 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       person.targetX = 450; person.targetY = 1590;
       setPose(person, 'standing');
     }
+    function removePerson(person: Person) {
+      scene.removeChild(person.body); person.body.destroy({ children: true });
+      people.delete(person.key); seats[person.seat].occupied = false;
+      setBadges(current => current.filter(item => item.key !== person.key));
+      badgeRefs.current.delete(person.key);
+    }
     function stopLiveScene() {
       stopVersion++;
       if (duckTimer) clearInterval(duckTimer);
       if (speechDisplayTimer) clearTimeout(speechDisplayTimer);
       currentMusic = 0;
-      pendingJoins.clear(); giftQueue.length = 0; speechQueue.length = 0;
+      pendingJoins.clear(); speechQueue.length = 0;
       voicePlaybackBlocked = false;
       activeGift = null; focusedKey = '';
       for (const person of people.values()) { scene.removeChild(person.body); person.body.destroy({ children: true }); seats[person.seat].occupied = false; }
-      people.clear(); badgeRefs.current.clear(); setBadges([]); setPrayers([]); setFallingGifts([]); setSpeech('');
+      people.clear(); badgeRefs.current.clear(); vipViewerKeys.clear(); giftCoinsByViewer.clear(); setBadges([]); setLeaders([]); setPrayers([]); setFallingGifts([]); setSpeech('');
       try { currentSource?.stop(); } catch { /* The source already finished. */ }
       window.speechSynthesis?.cancel();
       musicPlayer.current?.setVolume(0); musicPlayer.current?.pauseVideo();
@@ -147,6 +153,11 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
         if (badgeChanged) showBadge(existing);
         if (existing.state === 'leaving') { existing.state = 'walking'; existing.targetX = seats[existing.seat].x; existing.targetY = seats[existing.seat].y; }
         return existing;
+      }
+      if (event.eventType === 'gift.received' && (people.size >= maxPeople || seats.every(seat => seat.occupied))) {
+        const candidates = [...people.values()].sort((a, b) => a.last - b.last);
+        const oldest = candidates.find(person => person.key !== focusedKey) ?? candidates[0];
+        if (oldest) removePerson(oldest);
       }
       if (people.size >= maxPeople) {
         if (event.eventType === 'viewer.join') {
@@ -219,9 +230,9 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
         const side = Math.random() < .5 ? 0 : 1;
         const image = event.payload.giftImageUrl;
         const imageUrl = typeof image === 'string' && /^https:\/\//i.test(image) ? image : undefined;
-        setFallingGifts(current => [...current.slice(-11), { id: event.eventId, name: String(event.payload.giftName ?? 'Quà tặng'), imageUrl, left: side ? 70 + Math.random() * 17 : 9 + Math.random() * 18, top: 15 + Math.random() * 17, size, duration: 2.8 + Math.random() * .8 }]);
+        setFallingGifts(current => [...current.slice(-11), { id: event.eventId, name: String(event.payload.giftName ?? 'Quà tặng'), imageUrl, left: side ? 59 + Math.random() * 34 : 7 + Math.random() * 34, top: 10 + Math.random() * 38, size, duration: 2.5 + Math.random() * 1.4, drift: (Math.random() - .5) * 140, spin: (Math.random() - .5) * 80 }]);
         if (person) {
-          giftQueue.push(person.key);
+          activeGift = { key: person.key, until: Date.now() + 5000 };
           person.totalGiftCoins += points;
           giftCoinsByViewer.set(person.key, person.totalGiftCoins);
           person.highlightUntil = Date.now() + 3500;
@@ -381,10 +392,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
             const dx = person.targetX - person.x, dy = person.targetY - person.y, distance = Math.hypot(dx, dy);
             if (distance < 5) {
               if (person.state === 'leaving') {
-                scene.removeChild(person.body); person.body.destroy({ children: true });
-                people.delete(person.key); seats[person.seat].occupied = false;
-                setBadges(current => current.filter(item => item.key !== person.key));
-                badgeRefs.current.delete(person.key);
+                removePerson(person);
                 continue;
               }
               person.state = 'lowering'; person.phaseUntil = now + 650;
@@ -426,14 +434,13 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
             }
           }
         }
-        if (!activeGift && giftQueue.length) activeGift = { key: giftQueue.shift()!, until: now + 5000 };
         if (activeGift && now > activeGift.until) activeGift = null;
         const focus = activeGift ? people.get(activeGift.key) : undefined;
         if ((focus?.key ?? '') !== focusedKey) {
           focusedKey = focus?.key ?? '';
           for (const person of people.values()) person.body.filters = focusedKey && person.key !== focusedKey && blurFilter ? [blurFilter] : [];
         }
-        const targetX = focus?.x ?? 450, targetY = focus ? focus.y - 130 : 800, scale = focus ? 2.35 : 1;
+        const targetX = focus?.x ?? 450, targetY = focus ? focus.y - Math.max(130, focus.sprite.height + 25) : 800, scale = focus ? 2.35 : 1;
         camera.pivot.x += (targetX - camera.pivot.x) * .06;
         camera.pivot.y += (targetY - camera.pivot.y) * .06;
         camera.scale.x += (scale - camera.scale.x) * .06;
@@ -450,7 +457,8 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           badge.style.transform = `translate(-50%, -100%) scale(${Math.min(2.35, camera.scale.x) * .8})`;
           const fadeMs = 10000 + Math.min(50000, Math.log10(person.totalGiftCoins + 1) * 12000);
           const brightness = Math.max(0, 1 - (now - person.badgeBrightAt) / fadeMs);
-          badge.style.opacity = person.state === 'leaving' ? '0' : String(brightness * (focusedKey && person.key !== focusedKey ? .42 : 1));
+          badge.style.opacity = person.state === 'leaving' ? '0' : String(person.key === focusedKey ? 1 : brightness * (focusedKey ? .42 : 1));
+          badge.style.zIndex = person.key === focusedKey ? '8' : '1';
           badge.style.filter = focusedKey && person.key !== focusedKey ? 'blur(2px)' : '';
         }
       });
@@ -514,10 +522,11 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
         onEvent(event);
       });
       socket.on('live.status', (change: { status: string }) => {
+        const wasLiveActive = liveActive;
         liveActive = change.status === 'connecting' || change.status === 'connected';
         setLivePlaying(liveActive);
-        if (!liveActive) stopLiveScene();
-        else { currentMusic = musicBase; musicPlayer.current?.setVolume(previewMutedRef.current ? 0 : musicBase); }
+        if (!liveActive && wasLiveActive) stopLiveScene();
+        else { if (change.status === 'connecting') stopLiveScene(); currentMusic = musicBase; musicPlayer.current?.setVolume(previewMutedRef.current ? 0 : musicBase); }
       });
       socket.on('live.config', (change: { audio?: Record<string, unknown>; scene?: Record<string, unknown> }) => {
         if (change.scene) {
@@ -575,12 +584,12 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       <span className={styles.prayerAvatar}>☸{prayer.avatarUrl && <img src={prayer.avatarUrl} alt="" referrerPolicy="no-referrer" onError={event => event.currentTarget.remove()} />}</span>
       <strong>{prayer.name}</strong><span>{prayer.text}</span>
     </div>)}
-    {fallingGifts.map(gift => <div key={gift.id} className={styles.fallingGift} style={{ left: `${gift.left}%`, top: `${gift.top}%`, width: `${gift.size / WIDTH * 100}%`, animationDuration: `${gift.duration}s` }} onAnimationEnd={() => setFallingGifts(current => current.filter(item => item.id !== gift.id))}>
+    {fallingGifts.map(gift => <div key={gift.id} className={styles.fallingGift} style={{ left: `${gift.left}%`, top: `${gift.top}%`, width: `${gift.size / WIDTH * 100}%`, animationDuration: `${gift.duration}s`, '--gift-drift': `${gift.drift}px`, '--gift-spin': `${gift.spin}deg` } as CSSProperties} onAnimationEnd={() => setFallingGifts(current => current.filter(item => item.id !== gift.id))}>
       {gift.imageUrl ? <img src={gift.imageUrl} alt={gift.name} referrerPolicy="no-referrer" onError={event => { event.currentTarget.style.display = 'none'; event.currentTarget.nextElementSibling?.classList.add(styles.giftFallbackVisible); }} /> : null}
       <span className={gift.imageUrl ? styles.giftFallback : styles.giftFallbackVisible}>{gift.name}</span>
     </div>)}
     {status && <div style={{ position: 'absolute', top: 20, left: 20, padding: 10, background: '#1b140dcc', borderRadius: 10, color: '#fff' }}>{status}</div>}
-    <div style={{ position: 'absolute', top: '11%', right: '2%', width: '31%', padding: '1.2%', background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', boxSizing: 'border-box', textAlign: 'center', fontSize: '.85em' }}>
+    <div style={{ position: 'absolute', zIndex: 3, top: '11%', right: '2%', width: '31%', padding: '1.2%', background: '#1b140ddd', border: '1px solid #b88a46', borderRadius: 12, color: '#ffe0a0', boxSizing: 'border-box', textAlign: 'center', fontSize: '.85em' }}>
       <strong>Bảng Công Đức</strong>
       {leaders.map((leader, index) => <div key={leader.viewerKey} title={`Hạng ${index + 1}: +${leader.points} công đức · ${leader.gifts} quà`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 }}><span>{index + 1}.</span>{leader.avatarUrl ? <img src={leader.avatarUrl} alt="" referrerPolicy="no-referrer" style={{ width: 30, height: 30, borderRadius: '50%', objectFit: 'cover' }} /> : <span style={{ width: 30, height: 30, borderRadius: '50%', background: '#a46b29', display: 'grid', placeItems: 'center' }}>☸</span>}<span>+{leader.points} CĐ</span></div>)}
     </div>

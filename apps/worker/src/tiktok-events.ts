@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
@@ -63,5 +65,26 @@ export function normalizeTikTokGift(raw: Record<string, unknown>) {
     repeatCount: asNumber(raw.repeatCount),
     repeatEnd: giftType !== 1 || raw.repeatEnd === 1 || raw.repeatEnd === true,
     estimatedCoins: asNumber(details.diamondCount) ?? asNumber(legacy.diamondCount) ?? asNumber(extended.diamondCount) ?? asNumber(raw.diamondCount),
+  };
+}
+// TikTok sometimes omits a combo/group id. Track the cumulative streak per
+// viewer and gift so repeatCount 1..30 is stored as 30 items, not 465.
+export function createGiftNormalizer() {
+  const streaks = new Map<string, { id: string; count: number; at: number; ended: boolean }>();
+  return (raw: Record<string, unknown>) => {
+    const gift = normalizeTikTokGift(raw);
+    const giftType = asNumber(asRecord(raw.giftDetails).giftType) ?? asNumber(asRecord(raw.gift).giftType) ?? asNumber(raw.giftType);
+    if (gift.comboId || (giftType !== 1 && gift.repeatEnd && gift.quantity === 1)) return gift;
+    const viewer = normalizeTikTokUser(raw)?.id;
+    if (!viewer) return gift;
+    const key = `${viewer}:${gift.giftId}`;
+    const now = Date.now();
+    const previous = streaks.get(key);
+    const continuation = previous && !previous.ended && now - previous.at < 15000 &&
+      (gift.quantity > previous.count || (gift.repeatEnd && gift.quantity === previous.count));
+    const id = continuation ? previous.id : randomUUID();
+    streaks.set(key, { id, count: gift.quantity, at: now, ended: gift.repeatEnd });
+    if (streaks.size > 500) for (const [staleKey, value] of streaks) if (now - value.at > 15000) streaks.delete(staleKey);
+    return { ...gift, comboId: id };
   };
 }

@@ -154,16 +154,17 @@ class Services {
       });
       giftChanged = changed;
     }
-    // Live events remain available to Farm animations; duplicates don't replay their effects.
-    if (event.eventType !== 'gift.received' || giftChanged || event.payload.repeatEnd !== false) {
+    // A final combo signal may be repeated with a fresh message ID. Emit its
+    // animation and camera focus only once, even if an earlier partial saved it.
+    const firstFinal = event.eventType === 'gift.received' && event.payload.repeatEnd !== false
+      ? Boolean(await this.redis.set(`gift:final:${giftDedupKey(event)}`, '1', 'EX', 86400, 'NX')) : false;
+    if (event.eventType !== 'gift.received' || (event.payload.repeatEnd === false ? giftChanged : firstFinal)) {
       this.io?.to(`live:${event.liveId}`).emit('live.event', event);
     }
     if (event.eventType === 'gift.received') {
       if (giftChanged) this.io?.to(`live:${event.liveId}`).emit('gift.leaderboard.changed', { liveId: event.liveId });
       // Thank once on the final combo signal, even if the cumulative count was saved earlier.
-      if (event.payload.repeatEnd === false) return true;
-      const firstFinal = await this.redis.set(`gift:final:${giftDedupKey(event)}`, '1', 'EX', 86400, 'NX');
-      if (!firstFinal) return true;
+      if (event.payload.repeatEnd === false || !firstFinal) return true;
     }
     if (event.source === 'tiktok' || includeSimulatorAI) await this.enqueueAI(event);
     return true;
@@ -177,19 +178,27 @@ class Services {
     const intent = event.eventType === 'chat.comment' ? classifyComment(event.payload.text) : 'OTHER';
     const batchType = event.eventType === 'gift.received' ? 'gift'
       : intent === 'BUDDHA_CHANT' ? 'chant'
-      : intent.startsWith('PRAYER_') ? 'prayer' : null;
+      : intent.startsWith('PRAYER_') ? 'prayer'
+      : event.eventType === 'chat.comment' ? 'comment' : null;
     if (batchType && event.user?.id && event.source === 'tiktok') {
-      const windowMs = batchType === 'gift' ? 10000 : 8000;
+      const windowMs = batchType === 'comment' ? 5000 : batchType === 'gift' ? 6000 : 8000;
       const windowId = Math.floor(Date.now() / windowMs);
       const identity = batchType === 'gift'
         ? String(event.payload.giftId ?? event.payload.giftName ?? 'unknown')
-        : batchType === 'prayer' ? intent : 'chant';
+        : batchType === 'prayer' ? intent : batchType === 'comment' ? event.user.id : 'chant';
       const batchKey = `ai:batch:${event.liveId}:${event.sessionId ?? 'room'}:${batchType}:${identity}:${windowId}`;
-      const item = JSON.stringify({ userKey: event.user.id, nickname: event.user.nickname ?? 'phật tử', eventId: event.eventId, giftName: event.payload.giftName, intent });
+      const item = JSON.stringify({ userKey: event.user.id, nickname: event.user.nickname ?? 'phật tử', eventId: event.eventId, timestamp: event.timestamp, text: event.payload.text, giftName: event.payload.giftName, intent });
       await this.redis.rpush(batchKey, item);
+      if (batchType === 'comment') await this.redis.ltrim(batchKey, -8, -1);
       await this.redis.expire(batchKey, 120);
       const scheduled = await this.redis.set(`ai:batch:scheduled:${batchKey}`, '1', 'EX', 120, 'NX');
       if (scheduled) {
+        if (batchType === 'comment') {
+          const minuteKey = `ai:minute:comment:${event.liveId}:${Math.floor(Date.now() / 60000)}`;
+          const minuteCount = await this.redis.incr(minuteKey);
+          if (minuteCount === 1) await this.redis.expire(minuteKey, 120);
+          if (minuteCount > config.maxPerMinute) return;
+        }
         const live = await this.db.liveChannel.findUnique({ where: { id: event.liveId }, select: { ownerId: true } });
         if (!live) return;
         const quota = await this.db.userQuota.findUnique({ where: { userId: live.ownerId } });
@@ -249,6 +258,8 @@ class Services {
     if (firstComment) await this.redis.set(`ai:comment:answered:${event.liveId}:${userKey}`, '1', 'EX', 86400);
   }
   async leaderboard(id: string, includeSimulator = false) {
+    const live = await this.db.liveChannel.findUnique({ where: { id }, select: { lastConnectedAt: true } });
+    if (!live?.lastConnectedAt) return [];
     // Rank by the same merit points shown on the overlay. Gifts without a
     // known coin value contribute one point per item instead of sorting as NULL.
     const rows = await this.db.$queryRaw<{ viewerKey: string; gifts: bigint; points: bigint; estimatedCoins: bigint | null }[]>(Prisma.sql`
@@ -257,6 +268,7 @@ class Services {
              SUM("estimatedCoins")::bigint AS "estimatedCoins"
       FROM "GiftEvent"
       WHERE "liveId" = ${id}::uuid
+        AND "occurredAt" >= ${live.lastConnectedAt}
         ${includeSimulator ? Prisma.empty : Prisma.sql`AND source = ${EventSource.tiktok}::"EventSource"`}
       GROUP BY "viewerKey"
       ORDER BY points DESC, gifts DESC, "viewerKey" ASC
@@ -494,14 +506,15 @@ class LivesController {
     const sessions = session.roomId ? await this.s.db.liveSession.findMany({ where: { liveId: id, roomId: session.roomId }, select: { id: true, startedAt: true } }) : [session];
     const sessionIds = sessions.map(item => item.id);
     const startedAt = sessions.reduce((earliest, item) => item.startedAt < earliest ? item.startedAt : earliest, session.startedAt);
+    const giftStartedAt = live.lastConnectedAt ?? startedAt;
     const where = { liveId: id, sessionId: { in: sessionIds }, source: EventSource.tiktok };
     const [grouped, latestRoomStats, commentRows, giftTotals, giftRows, topGiftRows, summary] = await Promise.all([
       this.s.db.liveEvent.groupBy({ by: ['type'], where, _count: true }),
       this.s.db.liveEvent.findFirst({ where: { ...where, type: 'room.stats' }, orderBy: { createdAt: 'desc' }, select: { payload: true, occurredAt: true } }),
       this.s.db.liveEvent.findMany({ where: { ...where, type: 'chat.comment' }, orderBy: { createdAt: 'desc' }, take: 100, select: { userKey: true, payload: true, occurredAt: true } }),
-      this.s.db.giftEvent.aggregate({ where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: startedAt } }, _count: true, _sum: { quantity: true } }),
-      this.s.db.giftEvent.findMany({ where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: startedAt } }, orderBy: { occurredAt: 'desc' }, take: 20, select: { nickname: true, giftName: true, quantity: true, occurredAt: true } }),
-      this.s.db.giftEvent.groupBy({ by: ['giftName'], where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: startedAt } }, _sum: { quantity: true }, orderBy: { _sum: { quantity: 'desc' } }, take: 5 }),
+      this.s.db.giftEvent.aggregate({ where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: giftStartedAt } }, _count: true, _sum: { quantity: true } }),
+      this.s.db.giftEvent.findMany({ where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: giftStartedAt } }, orderBy: { occurredAt: 'desc' }, take: 20, select: { nickname: true, giftName: true, quantity: true, occurredAt: true } }),
+      this.s.db.giftEvent.groupBy({ by: ['giftName'], where: { liveId: id, source: EventSource.tiktok, occurredAt: { gte: giftStartedAt } }, _sum: { quantity: true }, orderBy: { _sum: { quantity: 'desc' } }, take: 5 }),
       this.s.db.$queryRaw<{ uniqueJoiners: bigint; hearts: bigint }[]>(Prisma.sql`
         SELECT COUNT(DISTINCT CASE WHEN type = 'viewer.join' THEN "userKey" END)::bigint AS "uniqueJoiners",
                COALESCE(SUM(CASE WHEN type = 'viewer.like' AND (payload->'payload'->>'count') ~ '^[0-9]+$'
@@ -572,12 +585,13 @@ class OverlayController {
       sessionIds.length ? this.s.db.liveEvent.findFirst({ where: { liveId: id, sessionId: { in: sessionIds }, type: 'room.stats' }, orderBy: { createdAt: 'desc' }, select: { payload: true } }) : null,
       this.s.leaderboard(id),
       this.s.db.audioConfiguration.findUnique({ where: { liveId: id }, select: { woodenFishEnabled: true, woodenFishVolume: true, musicVolume: true, musicUrl: true, ttsVolume: true, voiceId: true, speakingRate: true, pitch: true } }),
-      this.s.db.liveChannel.findUnique({ where: { id }, select: { status: true } }),
+      this.s.db.liveChannel.findUnique({ where: { id }, select: { status: true, lastConnectedAt: true } }),
     ]);
     const latestRoomStats = roomStats?.payload as LiveEvent | undefined;
     const stoppedRoomStats = latestRoomStats && live?.status !== 'connected' ? { ...latestRoomStats, payload: { ...latestRoomStats.payload, viewerCount: 0 } } : null;
-    const giftTotals = await this.s.db.giftEvent.groupBy({ by: ['viewerKey'], where: { liveId: id, viewerKey: { in: viewers.map(viewer => viewer.userKey) } }, _sum: { estimatedCoins: true } });
-    return { events: events.reverse().map(x => x.payload), activeViewers: viewers, roomStats: stoppedRoomStats ?? latestRoomStats ?? null, leaderboard, vipViewerKeys: giftTotals.filter(item => (item._sum.estimatedCoins ?? 0) > 100).map(item => item.viewerKey), giftCoinsByViewer: Object.fromEntries(giftTotals.map(item => [item.viewerKey, item._sum.estimatedCoins ?? 0])), scene, audio, status: live?.status ?? 'stopped' };
+    const active = live?.status === 'connected';
+    const giftTotals = await this.s.db.giftEvent.groupBy({ by: ['viewerKey'], where: { liveId: id, ...(active && live.lastConnectedAt ? { occurredAt: { gte: live.lastConnectedAt } } : { source: EventSource.simulator, occurredAt: { gte: cutoff } }), viewerKey: { in: viewers.map(viewer => viewer.userKey) } }, _sum: { estimatedCoins: true } });
+    return { events: events.reverse().map(x => x.payload), activeViewers: viewers, roomStats: stoppedRoomStats ?? latestRoomStats ?? null, leaderboard: active ? leaderboard : [], vipViewerKeys: giftTotals.filter(item => (item._sum.estimatedCoins ?? 0) > 100).map(item => item.viewerKey), giftCoinsByViewer: Object.fromEntries(giftTotals.map(item => [item.viewerKey, item._sum.estimatedCoins ?? 0])), scene, audio, status: live?.status ?? 'stopped' };
   }
 }
 

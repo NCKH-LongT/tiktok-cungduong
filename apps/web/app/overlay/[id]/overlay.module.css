@@ -8,4 +8,4 @@
 .fallingGift img{position:absolute;width:100%;height:100%;object-fit:contain}
 .giftFallback{display:none}
 .giftFallbackVisible{display:grid;place-items:center;width:100%;height:100%;padding:6%;border-radius:50%;background:radial-gradient(circle,#fff2c1,#e9a83b 60%,#8b490d);color:#5c290e;font-size:clamp(9px,2.4cqw,20px);font-weight:700;text-align:center;overflow-wrap:anywhere;box-sizing:border-box}
-@keyframes giftFall{0%{transform:translate(-50%,-65cqh) rotate(-12deg) scale(.5);opacity:0}12%{opacity:1}70%{transform:translate(-50%,0) rotate(8deg) scale(1);opacity:1}88%{transform:translate(-50%,0) rotate(0) scale(1);opacity:1}100%{transform:translate(-50%,3cqh) rotate(0) scale(.85);opacity:0}}
+@keyframes giftFall{0%{transform:translate(calc(-50% + var(--gift-drift)), -65cqh) rotate(var(--gift-spin)) scale(.5);opacity:0}12%{opacity:1}45%{transform:translate(calc(-50% - var(--gift-drift)),-24cqh) rotate(0deg) scale(.9)}70%{transform:translate(-50%,0) rotate(8deg) scale(1);opacity:1}88%{transform:translate(-50%,0) rotate(0) scale(1);opacity:1}100%{transform:translate(-50%,3cqh) rotate(0) scale(.85);opacity:0}}

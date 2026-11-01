@@ -1,5 +1,11 @@
 # Progress and acceptance status
 
+## Farm Công Đức and AI batching, 2026-11-02 (`main`)
+
+Combo quà TikTok giờ được nhận diện theo phiên LIVE; nếu TikTok thiếu group ID, worker theo dõi chuỗi quà ngắn của từng người và loại quà. Số CĐ lấy theo tổng xu của combo, không cộng lặp các mốc x20→x30. Bảng CĐ, thống kê quà và hào quang chỉ lấy dữ liệu từ lần kết nối thành công gần nhất, nên LIVE mới bắt đầu từ 0; lịch sử quà vẫn lưu trong database. Quà rơi có vị trí, độ lệch, góc xoay và thời gian ngẫu nhiên. Khi cảnh đầy, người tặng quà chưa có nhân vật được cấp chỗ ngay; camera chuyển tới người đó và bảng tên luôn sáng, nằm trên bảng CĐ khi zoom.
+
+AI gom bình luận thường của cùng một người trong cửa sổ 5 giây thành một câu trả lời dùng ngữ cảnh các bình luận gần đây. Quà cùng loại từ nhiều người được gom trong 6 giây thành một lời cảm ơn nhắc tên, dùng mẫu tiếng Việt nên không tốn Gemini token. Lời niệm Phật/cầu nguyện vẫn gom 8 giây. Bài Docker smoke riêng đã kiểm tra reset CĐ, combo x20→x30 rồi combo x20 khác cho tổng 50 CĐ, tín hiệu cuối combo lặp không phát lại animation, hai bình luận thành một AI reply và hai người tặng cùng quà thành một lời cảm ơn. Chrome headless với 40 nhân vật đã xác nhận người tặng thứ 41 được lấy nét, bảng tên có opacity 1/z-index 8, và các quà rơi ở vị trí khác nhau. Unit test, typecheck và build web đạt; vẫn cần đối chiếu trên LIVE TikTok thật hoặc OBS sau deploy.
+
 ## Farm Công Đức feature audit, 2026-11-02 (`main`)
 
 Bảng Công Đức đã được sửa trên `main`: trước đây API xếp theo xu nhưng overlay hiện số quà, khiến thứ hạng không khớp số trên bảng. API và overlay nay dùng cùng tổng CĐ; quà không rõ xu tính một điểm mỗi món, bằng điểm thì xét số quà và TikTok ID. Overlay bỏ lần tải bảng lặp và bỏ qua phản hồi cũ đến muộn. Bài smoke trên Docker/PostgreSQL riêng đã kiểm tra thứ tự điểm `100, 13, 5, 5` qua cả Analytics và overlay snapshot. Chưa kiểm tra trực tiếp trên phiên LIVE TikTok thật sau sửa.

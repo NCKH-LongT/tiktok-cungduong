@@ -8,7 +8,7 @@ import { TikTokLiveConnection, WebcastEvent, ControlEvent } from 'tiktok-live-co
 import { hasLiveAccess, type LiveEvent } from '@cd/shared';
 import { buildBatchSpeech } from '@cd/shared/smart-interactions';
 import { decryptGeminiKey } from '@cd/shared/gemini-key';
-import { asNumber, asRecord, asString, normalizeTikTokComment, normalizeTikTokGift, normalizeTikTokUser } from './tiktok-events.js';
+import { asNumber, asRecord, asString, createGiftNormalizer, normalizeTikTokComment, normalizeTikTokUser } from './tiktok-events.js';
 import { addressViewer, limitReplyWords } from './ai-text.js';
 import { perMinute, reserveDailyTtsSlot, waitForProviderSlot } from './provider-rate-limit.js';
 import { isValidMp3, synthesizeLocalSpeech } from './local-tts.js';
@@ -43,6 +43,7 @@ async function runTikTok() {
     const client = new TikTokLiveConnection(uniqueId, { processInitialData: false, signApiKey: process.env.TIKTOK_SIGN_API_KEY || undefined }) as TikTokLiveConnection & EventEmitter;
     connections.set(liveId, { client, sessionId: session.id, lastMessageAt: Date.now() });
     let lastRoomStatsAt = 0, lastViewerCount = -1;
+    const normalizeGift = createGiftNormalizer();
     const on = (type: LiveEvent['eventType'], fn: (r: Record<string, unknown>) => Record<string, unknown>, accept: (r: Record<string, unknown>) => boolean = () => true) => (raw: unknown) => {
       const data = record(raw), active = connections.get(liveId);
       if (active) active.lastMessageAt = Date.now();
@@ -57,7 +58,7 @@ async function runTikTok() {
       return true;
     }));
     client.on(WebcastEvent.LIKE, on('viewer.like', d => ({ count: number(d.count) ?? number(d.likeCount) ?? 1, total: number(d.total) ?? number(d.totalLikeCount) })));
-    client.on(WebcastEvent.GIFT, on('gift.received', normalizeTikTokGift));
+    client.on(WebcastEvent.GIFT, on('gift.received', normalizeGift));
     client.on(WebcastEvent.SHARE, on('viewer.share', () => ({})));
     client.on(WebcastEvent.FOLLOW, on('viewer.follow', () => ({})));
     client.on(WebcastEvent.STREAM_END, () => { if (connections.has(liveId)) void (async () => { await disconnect(liveId); await unavailable(liveId); })(); });
@@ -121,13 +122,22 @@ async function runAI() {
   }
   const worker = new Worker('speech', async job => {
     const batchKey = typeof job.data.batchKey === 'string' ? job.data.batchKey : null;
-    const batchType = job.data.batchType as 'gift' | 'chant' | 'prayer' | undefined;
+    const batchType = job.data.batchType as 'gift' | 'chant' | 'prayer' | 'comment' | undefined;
     const batchRows = batchKey ? await redis.lrange(batchKey, 0, -1) : [];
     if (batchKey && !batchRows.length) return;
-    const batchMembers = batchRows.map(row => JSON.parse(row) as { userKey: string; nickname: string; giftName?: string });
-    const input = job.data.event as LiveEvent;
+    const batchMembers = batchRows.map(row => JSON.parse(row) as { userKey: string; nickname: string; giftName?: string; eventId: string; timestamp?: string; text?: string });
+    if (batchType === 'comment') batchMembers.sort((a, b) => Date.parse(a.timestamp ?? '') - Date.parse(b.timestamp ?? ''));
+    let input = job.data.event as LiveEvent;
+    if (batchType === 'comment') {
+      const latest = batchMembers.at(-1)!;
+      input = { ...input, eventId: latest.eventId, timestamp: latest.timestamp ?? input.timestamp, payload: { ...input.payload, text: batchMembers.map(member => member.text).filter(Boolean).join('\n') } };
+    }
     const liveAtStart = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { ownerId: true, deletedAt: true, status: true, owner: { select: { role: true, accessUntil: true, ttsProvider: true, maxAiReplyWords: true } } } });
     if (!liveAtStart || liveAtStart.deletedAt || (input.source === 'tiktok' && (liveAtStart.status !== 'connected' || !hasLiveAccess(liveAtStart.owner.role, liveAtStart.owner.accessUntil)))) return;
+    if (input.source === 'tiktok' && input.sessionId) {
+      const latestSession = await db.liveSession.findFirst({ where: { liveId: input.liveId, events: { some: { type: 'room.connected' } } }, orderBy: { startedAt: 'desc' }, select: { id: true } });
+      if (latestSession?.id !== input.sessionId) return;
+    }
     const config = await db.aIConfiguration.findUnique({ where: { liveId: input.liveId } });
     if (!config?.enabled) return;
     const name = (input.user?.nickname ?? 'phật tử').slice(0, 60);
@@ -135,7 +145,7 @@ async function runAI() {
     let text: string;
     let usedFallback = false;
     let prompt = '';
-    if (batchKey && batchType) {
+    if (batchKey && batchType && batchType !== 'comment') {
       const uniqueNames = [...new Map(batchMembers.map(member => [member.userKey, member.nickname])).values()];
       text = buildBatchSpeech(batchType, uniqueNames, batchMembers[0]?.giftName);
       usedFallback = true; // deterministic template: no Gemini token usage
@@ -183,9 +193,9 @@ async function runAI() {
         text = `${name} ơi, Chánh điện đang tạm chậm phản hồi. Mong ${name} giữ lòng bình an và thử gửi lại sau ít phút.`;
       }
     }
-    text = batchKey ? text : limitReplyWords(addressViewer(text, name), replyLimit);
+    text = batchType === 'comment' || !batchKey ? limitReplyWords(addressViewer(text, name), replyLimit) : text;
     if (!(await db.liveChannel.findFirst({ where: { id: input.liveId, deletedAt: null }, select: { id: true } }))) return;
-    const interaction = await db.aIInteraction.create({ data: { liveId: input.liveId, sourceEventId: batchKey ? null : input.eventId, prompt: prompt || null, answer: text, status: batchKey ? 'batch_template' : usedFallback ? 'fallback' : 'completed' } });
+    const interaction = await db.aIInteraction.create({ data: { liveId: input.liveId, sourceEventId: batchType === 'comment' || !batchKey ? input.eventId : null, prompt: prompt || null, answer: text, status: batchKey && batchType !== 'comment' ? 'batch_template' : usedFallback ? 'fallback' : 'completed' } });
     let audio: string | undefined;
     const voice = await db.audioConfiguration.findUnique({ where: { liveId: input.liveId } });
     const voiceEnabled = voice?.ttsEnabled !== false;

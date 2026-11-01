@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeTikTokUser, normalizeTikTokComment, normalizeTikTokGift, asNumber } from '../src/tiktok-events';
+import { normalizeTikTokUser, normalizeTikTokComment, normalizeTikTokGift, createGiftNormalizer, asNumber } from '../src/tiktok-events';
 
 test('member events use the nested TikTok user id when the top-level id is zero', () => {
   const first = normalizeTikTokUser({ userId: '0', user: { id: '7234567890123456789', displayId: 'viewer_one', nickname: 'Một' } });
@@ -43,4 +43,21 @@ test('gift images use the TikTok HTTPS image and reject unsafe URLs', () => {
   assert.equal(gift.giftImageUrl, 'https://example.invalid/rose.png');
   assert.equal(normalizeTikTokGift({ giftDetails: { giftImage: { url: ['javascript:alert(1)'] } } }).giftImageUrl, undefined);
   assert.equal(normalizeTikTokGift({ giftPictureUrl: 'https://example.invalid/legacy.png' }).giftImageUrl, 'https://example.invalid/legacy.png');
+});
+
+test('streak without a TikTok group id keeps one combo and resets on the next streak', () => {
+  const normalize = createGiftNormalizer();
+  const raw = { user: { id: 'viewer-1' }, giftId: 'rose', giftDetails: { giftType: 1, diamondCount: 1 } };
+  const first = normalize({ ...raw, repeatCount: 1, repeatEnd: false });
+  const twenty = normalize({ ...raw, repeatCount: 20, repeatEnd: false });
+  const thirty = normalize({ ...raw, repeatCount: 30, repeatEnd: true });
+  const next = normalize({ ...raw, repeatCount: 1, repeatEnd: false });
+  assert.equal(first.comboId, twenty.comboId);
+  assert.equal(twenty.comboId, thirty.comboId);
+  assert.notEqual(thirty.comboId, next.comboId);
+  assert.equal(thirty.quantity * (thirty.estimatedCoins ?? 0), 30);
+  const finalOne = normalize({ ...raw, repeatCount: 1, repeatEnd: true });
+  assert.equal(next.comboId, finalOne.comboId);
+  const separateThirty = normalize({ ...raw, repeatCount: 30, repeatEnd: true });
+  assert.notEqual(finalOne.comboId, separateThirty.comboId);
 });
