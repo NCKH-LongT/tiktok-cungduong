@@ -9,7 +9,7 @@ import styles from './overlay.module.css';
 type LiveEvent = { eventId: string; eventType: string; source: string; user?: { id?: string; uniqueId?: string; nickname?: string; avatarUrl?: string }; payload: Record<string, unknown> };
 type Person = { key: string; name: string; avatarUrl?: string; seat: number; body: Container; sprite: Sprite; glow: Graphics; label: Text; state: 'walking' | 'lowering' | 'bowing' | 'kneeling' | 'leaving'; x: number; y: number; targetX: number; targetY: number; last: number; bubbleUntil: number; phaseUntil: number; highlightUntil: number; badgeBrightAt: number };
 type Badge = { key: string; name: string; avatarUrl?: string; vip: boolean };
-type Speech = { text: string; audio?: string; source?: string };
+type Speech = { text: string; audio?: string; source?: string; voiceEnabled?: boolean };
 type Prayer = { id: string; name: string; avatarUrl?: string; text: string; top: number; duration: number };
 const WIDTH = 900, HEIGHT = 1600;
 
@@ -19,7 +19,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   const badgeRefs = useRef(new Map<string, HTMLDivElement>());
   const musicPlayer = useRef<YouTubePlayer | null>(null);
   const retryVoiceRef = useRef<(() => void) | null>(null);
-  const lastSpeechRef = useRef<Speech | null>(null);
+  const unlockVoiceRef = useRef<(() => void) | null>(null);
   const previewMutedRef = useRef(false);
   const [previewMuted, setPreviewMuted] = useState(false);
   const [status, setStatus] = useState('');
@@ -30,15 +30,19 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
   const [livePlaying, setLivePlaying] = useState(false);
   const [badges, setBadges] = useState<Badge[]>([]);
   const [voiceBlocked, setVoiceBlocked] = useState(false);
+  const [voiceReady, setVoiceReady] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [prayers, setPrayers] = useState<Prayer[]>([]);
 
   useEffect(() => {
     let app: Application | undefined, socket: Socket | undefined, disposed = false;
     let scene: Container, camera: Container, audioContext: AudioContext | undefined;
     let ttl = 900000, maxPeople = 40, reducedMotion = false, fishEnabled = false, fishVolume = .3, ttsVolume = .8, ttsRate = 1, ttsPitch = 0, musicBase = 30, currentMusic = 30;
-    let nextAmbientBowAt = Date.now() + 10000, liveActive = false;
-    let duckTimer: ReturnType<typeof setInterval> | undefined, currentAudio: HTMLAudioElement | undefined;
+    let nextAmbientBowAt = Date.now() + 10000, liveActive = false, voiceAllowed = true;
+    let duckTimer: ReturnType<typeof setInterval> | undefined, currentSource: AudioBufferSourceNode | undefined, currentGain: GainNode | undefined;
+    let speechDisplayTimer: ReturnType<typeof setTimeout> | undefined;
     let activeGift: { key: string; until: number } | null = null, focusedKey = '', speaking = false, stopVersion = 0;
+    let voicePlaybackBlocked = false;
     const giftQueue: string[] = [], speechQueue: Speech[] = [];
     const people = new Map<string, Person>();
     const vipViewerKeys = new Set<string>();
@@ -55,10 +59,11 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       if (event.source !== window.parent || event.origin !== window.location.origin || event.data?.type !== 'overlay.preview-audio') return;
       previewMutedRef.current = Boolean(event.data.muted);
       setPreviewMuted(previewMutedRef.current);
-      if (currentAudio) currentAudio.volume = previewMutedRef.current ? 0 : ttsVolume;
+      if (currentGain) currentGain.gain.value = previewMutedRef.current ? 0 : ttsVolume;
       if (previewMutedRef.current) window.speechSynthesis?.cancel();
       musicPlayer.current?.setVolume(previewMutedRef.current ? 0 : currentMusic);
       if (!previewMutedRef.current) {
+        voicePlaybackBlocked = false;
         void audioContext?.resume();
         if (liveActive) musicPlayer.current?.playVideo();
         void playSpeech();
@@ -110,12 +115,15 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     function stopLiveScene() {
       stopVersion++;
       if (duckTimer) clearInterval(duckTimer);
+      if (speechDisplayTimer) clearTimeout(speechDisplayTimer);
       currentMusic = 0;
       pendingJoins.clear(); giftQueue.length = 0; speechQueue.length = 0;
+      voicePlaybackBlocked = false;
       activeGift = null; focusedKey = '';
       for (const person of people.values()) { scene.removeChild(person.body); person.body.destroy({ children: true }); seats[person.seat].occupied = false; }
       people.clear(); badgeRefs.current.clear(); setBadges([]); setPrayers([]); setSpeech('');
-      currentAudio?.pause(); window.speechSynthesis?.cancel();
+      try { currentSource?.stop(); } catch { /* The source already finished. */ }
+      window.speechSynthesis?.cancel();
       musicPlayer.current?.setVolume(0); musicPlayer.current?.pauseVideo();
     }
     function spawn(event: LiveEvent) {
@@ -211,19 +219,44 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
         if (step >= 10 && duckTimer) clearInterval(duckTimer);
       }, 60);
     }
-    async function playVoice(job: Speech) {
-      if (previewMutedRef.current) return;
+    async function playVoice(job: Speech): Promise<boolean> {
+      if (previewMutedRef.current || !voiceAllowed || job.voiceEnabled === false) return true;
       if (job.audio) {
-        const audio = new Audio('data:audio/mpeg;base64,' + job.audio);
-        currentAudio = audio; audio.volume = ttsVolume;
-        await new Promise<void>(resolve => {
-          const timer = setTimeout(() => { audio.pause(); resolve(); }, 120000);
-          const done = () => { clearTimeout(timer); resolve(); };
-          audio.onended = done; audio.onerror = done; audio.onpause = done;
-          void audio.play().then(() => setVoiceBlocked(false)).catch(() => { setVoiceBlocked(true); done(); });
-        });
-        currentAudio = undefined;
+        try {
+          audioContext ??= new AudioContext();
+          if (audioContext.state !== 'running') {
+            await Promise.race([
+              audioContext.resume(),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Audio unlock timeout')), 3000))
+            ]);
+          }
+          if (audioContext.state !== 'running') throw new Error('Audio is suspended');
+          const bytes = Uint8Array.from(atob(job.audio), character => character.charCodeAt(0));
+          const buffer = await audioContext.decodeAudioData(bytes.buffer);
+          const source = audioContext.createBufferSource();
+          const gain = audioContext.createGain();
+          source.buffer = buffer;
+          gain.gain.value = previewMutedRef.current ? 0 : ttsVolume;
+          source.connect(gain).connect(audioContext.destination);
+          currentSource = source;
+          currentGain = gain;
+          await new Promise<void>(resolve => {
+            const timer = setTimeout(() => { try { source.stop(); } catch { resolve(); } }, 120000);
+            source.onended = () => { clearTimeout(timer); resolve(); };
+            source.start();
+            setVoiceReady(true);
+            setVoiceBlocked(false);
+          });
+          if (currentSource === source) { currentSource = undefined; currentGain = undefined; }
+          return true;
+        } catch {
+          currentSource = undefined;
+          currentGain = undefined;
+          setVoiceBlocked(true);
+          return false;
+        }
       } else if ('speechSynthesis' in window) {
+        let started = false;
         await new Promise<void>(resolve => {
           const utterance = new SpeechSynthesisUtterance(job.text);
           utterance.lang = 'vi-VN'; utterance.volume = ttsVolume; utterance.rate = ttsRate; utterance.pitch = Math.max(0, Math.min(2, 1 + ttsPitch / 10));
@@ -232,32 +265,57 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           const startTimer = setTimeout(() => { setVoiceBlocked(true); window.speechSynthesis.cancel(); done(); }, 10000);
           const timer = setTimeout(() => { window.speechSynthesis.cancel(); done(); }, 120000);
           const done = () => { clearTimeout(startTimer); clearTimeout(timer); resolve(); };
-          utterance.onstart = () => { clearTimeout(startTimer); setVoiceBlocked(false); };
+          utterance.onstart = () => { started = true; clearTimeout(startTimer); setVoiceReady(true); setVoiceBlocked(false); };
           utterance.onend = done; utterance.onerror = () => { setVoiceBlocked(true); done(); };
           window.speechSynthesis.speak(utterance);
         });
-      } else setVoiceBlocked(true);
+        return started;
+      }
+      setVoiceBlocked(true);
+      return false;
     }
     retryVoiceRef.current = () => {
-      if (!lastSpeechRef.current) return;
       window.speechSynthesis?.cancel();
-      void playVoice(lastSpeechRef.current);
+      voicePlaybackBlocked = false;
+      void playSpeech();
     };
+    function unlockVoice() {
+      try {
+        audioContext ??= new AudioContext();
+        void audioContext.resume();
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        gain.gain.setValueAtTime(.0001, audioContext.currentTime);
+        gain.gain.exponentialRampToValueAtTime(.06, audioContext.currentTime + .02);
+        gain.gain.exponentialRampToValueAtTime(.0001, audioContext.currentTime + .18);
+        oscillator.frequency.value = 660;
+        oscillator.connect(gain).connect(audioContext.destination);
+        oscillator.start(); oscillator.stop(audioContext.currentTime + .2);
+        setVoiceReady(true);
+        retryVoiceRef.current?.();
+      } catch { setVoiceBlocked(true); }
+    }
+    unlockVoiceRef.current = unlockVoice;
     async function playSpeech() {
       if (speaking) return;
       speaking = true;
       while (speechQueue.length && !disposed && !previewMutedRef.current) {
         const job = speechQueue.shift()!;
         const version = stopVersion;
-        lastSpeechRef.current = job;
+        if (speechDisplayTimer) clearTimeout(speechDisplayTimer);
         setSpeech(job.text);
         duck(Math.round(musicBase * .25));
         const startedAt = Date.now();
-        await playVoice(job);
+        const played = await playVoice(job);
         if (version !== stopVersion) { setSpeech(''); continue; }
-        await new Promise(resolve => setTimeout(resolve, Math.max(0, 6000 - (Date.now() - startedAt))));
+        if (!played) {
+          voicePlaybackBlocked = true;
+          speechQueue.splice(0, speechQueue.length, job);
+          duck(musicBase);
+          break;
+        }
         duck(musicBase);
-        setSpeech('');
+        speechDisplayTimer = setTimeout(() => setSpeech(''), Math.max(0, 6000 - (Date.now() - startedAt)));
       }
       speaking = false;
     }
@@ -381,6 +439,8 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       fishEnabled = Boolean(snapshot.audio?.woodenFishEnabled);
       fishVolume = (snapshot.audio?.woodenFishVolume ?? 30) / 100;
       ttsVolume = (snapshot.audio?.ttsVolume ?? 80) / 100;
+      voiceAllowed = snapshot.audio?.ttsEnabled !== false;
+      setVoiceEnabled(voiceAllowed);
       ttsRate = snapshot.audio?.speakingRate ?? 1;
       ttsPitch = snapshot.audio?.pitch ?? 0;
       musicBase = snapshot.audio?.musicVolume ?? 30;
@@ -426,9 +486,14 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           fishEnabled = Boolean(change.audio.woodenFishEnabled);
           fishVolume = Number(change.audio.woodenFishVolume ?? fishVolume * 100) / 100;
           ttsVolume = Number(change.audio.ttsVolume ?? ttsVolume * 100) / 100;
+          if (change.audio.ttsEnabled !== undefined) {
+            voiceAllowed = Boolean(change.audio.ttsEnabled);
+            setVoiceEnabled(voiceAllowed);
+            if (!voiceAllowed) { try { currentSource?.stop(); } catch { /* The source already finished. */ } window.speechSynthesis?.cancel(); setVoiceBlocked(false); voicePlaybackBlocked = false; void playSpeech(); }
+          }
           ttsRate = Number(change.audio.speakingRate ?? ttsRate);
           ttsPitch = Number(change.audio.pitch ?? ttsPitch);
-          if (currentAudio) currentAudio.volume = previewMutedRef.current ? 0 : ttsVolume;
+          if (currentGain) currentGain.gain.value = previewMutedRef.current ? 0 : ttsVolume;
           musicBase = Number(change.audio.musicVolume ?? musicBase);
           currentMusic = musicBase;
           setMusicVolume(musicBase);
@@ -438,6 +503,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       });
       socket.on('speech.ready', (job: Speech) => {
         if (job.source === 'tiktok' && !liveActive) return;
+        if (voicePlaybackBlocked) { speechQueue.splice(0, speechQueue.length, job); setSpeech(job.text); return; }
         speechQueue.push(job);
         if (previewMutedRef.current) speechQueue.splice(0, speechQueue.length - 1);
         else if (speechQueue.length > 20) speechQueue.shift();
@@ -448,9 +514,12 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     return () => {
       disposed = true; socket?.disconnect(); app?.destroy(true);
       window.removeEventListener('message', onPreviewAudio);
-      currentAudio?.pause(); window.speechSynthesis?.cancel();
+      try { currentSource?.stop(); } catch { /* The source already finished. */ }
+      window.speechSynthesis?.cancel();
       if (duckTimer) clearInterval(duckTimer);
+      if (speechDisplayTimer) clearTimeout(speechDisplayTimer);
       retryVoiceRef.current = null;
+      unlockVoiceRef.current = null;
       void audioContext?.close();
     };
   }, [id]);
@@ -471,6 +540,6 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
     </div>
     <MusicPlayer key={musicUrl} url={musicUrl} volume={previewMuted || !livePlaying ? 0 : musicVolume} playing={livePlaying && !previewMuted} playerRef={musicPlayer} />
     {speech && <div style={{ position: 'absolute', bottom: 50, left: '10%', right: '10%', padding: 20, background: '#241a12dd', color: '#fff', textAlign: 'center', borderRadius: 18 }}>{speech}</div>}
-    {voiceBlocked && <button style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 10 }} onClick={() => retryVoiceRef.current?.()}>Bật giọng đọc tiếng Việt</button>}
+    {voiceEnabled && !previewMuted && (!voiceReady || voiceBlocked) && <button style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 10 }} onClick={() => unlockVoiceRef.current?.()}>Bật giọng AI</button>}
   </main>;
 }

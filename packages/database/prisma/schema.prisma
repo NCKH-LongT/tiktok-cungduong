@@ -290,6 +290,7 @@ model AudioConfiguration {
   musicUrl          String?
   musicVolume       Int         @default(30)
   ttsVolume         Int         @default(80)
+  ttsEnabled        Boolean     @default(true)
   voiceId           String      @default("vi-VN-Standard-A")
   speakingRate      Float       @default(1)
   pitch             Float       @default(0)

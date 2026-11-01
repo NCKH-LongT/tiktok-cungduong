@@ -90,6 +90,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      GEMINI_RPM_LIMIT: ${GEMINI_RPM_LIMIT:-5}
+      TTS_RPM_LIMIT: ${TTS_RPM_LIMIT:-30}
     volumes:
       - ./secrets:/run/secrets:ro
     depends_on:
