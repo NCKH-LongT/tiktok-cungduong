@@ -20,3 +20,14 @@ export async function waitForProviderSlot(redis: Redis, provider: 'gemini' | 'tt
   const delay = Number(await redis.eval(reserveScript, 1, `provider:next:${provider}`, interval));
   if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
 }
+
+export async function reserveDailyTtsSlot(redis: Redis, key: string, limit: number): Promise<boolean> {
+  const script = `
+local used = tonumber(redis.call('GET', KEYS[1]) or '0')
+if used >= tonumber(ARGV[1]) then return 0 end
+used = redis.call('INCR', KEYS[1])
+if used == 1 then redis.call('EXPIRE', KEYS[1], 172800) end
+return 1
+`;
+  return Number(await redis.eval(script, 1, key, limit)) === 1;
+}

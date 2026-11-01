@@ -54,6 +54,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [deletingLiveId, setDeletingLiveId] = useState<string | null>(null);
 
   async function reload() {
     try {
@@ -61,7 +62,7 @@ export default function Home() {
       setUser(me);
       const status = await api('/billing/status') as Billing;
       setBilling(status);
-      setLives(status.active ? await api('/lives') as Live[] : []);
+      setLives(await api('/lives') as Live[]);
       if (status.active && window.location.search.includes('payment=')) window.history.replaceState(null, '', '/');
     } catch (cause) {
       if (String(cause).includes('Authentication required') || String(cause).includes('Session expired')) {
@@ -97,6 +98,15 @@ export default function Home() {
       await api('/lives', { method: 'POST', body: JSON.stringify({ title, uniqueId }) });
       setTitle(''); setUniqueId(''); await reload();
     } catch (cause) { setError(String(cause)); }
+  }
+  async function removeLive(live: Live) {
+    if (!window.confirm(`Xóa vĩnh viễn TikTok ID @${live.uniqueId}? Toàn bộ bình luận, quà tặng, lịch sử AI, token overlay và âm thanh đang chờ của LIVE này sẽ bị xóa.`)) return;
+    setDeletingLiveId(live.id); setError('');
+    try {
+      await api(`/lives/${live.id}`, { method: 'DELETE' });
+      setLives(current => current.filter(item => item.id !== live.id));
+    } catch (cause) { setError(String(cause)); }
+    finally { setDeletingLiveId(null); }
   }
   async function checkout() {
     setError(''); setCheckoutBusy(true);
@@ -137,10 +147,10 @@ export default function Home() {
           <p className="muted">Quyền sử dụng được cập nhật sau khi payOS xác nhận thanh toán. Nếu vừa thanh toán, hãy đợi vài giây hoặc tải lại trang.</p>
         </div>}
       </section>}
-      {billing?.active && <>
+      {(billing?.active || lives.length > 0) && <>
         <h2 style={{ marginTop: 30 }}>LIVE của bạn</h2>
-        <div className="grid">{lives.map(live => <a key={live.id} className="card" href={'/live/' + live.id}><h3>{live.title}</h3><p>@{live.uniqueId}</p><span className="pill">{live.status}</span><p className="muted">Mở bảng điều khiển →</p></a>)}</div>
-        {user.role !== 'VIEWER' && <section className="card" style={{ marginTop: 25, maxWidth: 550 }}>
+        <div className="grid">{lives.map(live => <article key={live.id} className="card">{billing?.active ? <a href={'/live/' + live.id}><h3>{live.title}</h3><p>@{live.uniqueId}</p><span className="pill">{live.status}</span><p className="muted">Mở bảng điều khiển →</p></a> : <div><h3>{live.title}</h3><p>@{live.uniqueId}</p><span className="pill">{live.status}</span></div>}{user.role !== 'VIEWER' && <button type="button" disabled={deletingLiveId === live.id} onClick={() => void removeLive(live)}>{deletingLiveId === live.id ? 'Đang xóa…' : 'Xóa TikTok ID và dữ liệu'}</button>}</article>)}</div>
+        {billing?.active && user.role !== 'VIEWER' && <section className="card" style={{ marginTop: 25, maxWidth: 550 }}>
           <h3>Thêm kênh LIVE</h3>
           <form className="stack" onSubmit={add}>
             <label>Tên hiển thị<input value={title} onChange={event => setTitle(event.target.value)} required /></label>

@@ -12,6 +12,7 @@ import helmet from 'helmet';
 import { z } from 'zod';
 import type { Webhook, WebhookData } from '@payos/node';
 import { giftDedupKey, hasLiveAccess, liveEventSchema, shouldAnswerComment, type LiveEvent } from '@cd/shared';
+import { encryptGeminiKey } from '@cd/shared/gemini-key';
 import { DAY_PASS_VND, newOrderCode, payOSClient, settlePaidOrder } from './billing.js';
 import { revenueWindow } from './revenue.js';
 import type { Request, Response } from 'express';
@@ -48,10 +49,10 @@ class Services {
   requireLiveAccess(principal: NonNullable<AuthedRequest['principal']>) {
     if (!hasLiveAccess(principal.role, principal.accessUntil)) fail(402, 'Nạp 50.000₫ để sử dụng LIVE trong 24 giờ');
   }
-  async live(id: string, req: AuthedRequest) {
+  async live(id: string, req: AuthedRequest, requireAccess = true) {
     parse(uuid, id);
     const principal = req.principal ?? await this.auth(req);
-    this.requireLiveAccess(principal);
+    if (requireAccess) this.requireLiveAccess(principal);
     const live = await this.db.liveChannel.findFirst({ where: { id, deletedAt: null, ...(principal.role === 'SUPER_ADMIN' ? {} : { ownerId: principal.id }) } });
     if (!live) fail(404, 'LIVE not found');
     return live;
@@ -66,6 +67,35 @@ class Services {
   async disconnectOverlays(id: string) {
     for (const socket of await this.io?.in(`live:${id}`).fetchSockets() ?? []) {
       if (socket.data.overlay) socket.disconnect(true);
+    }
+  }
+  async purgeLiveRuntime(id: string) {
+    const jobs = await this.speechQueue.getJobs(['waiting', 'paused', 'delayed', 'prioritized', 'completed', 'failed', 'active'], 0, -1);
+    for (const job of jobs) {
+      if (job.data?.event?.liveId !== id) continue;
+      try { await job.remove(); }
+      catch { /* Active jobs are removed by the worker after they finish. */ }
+    }
+    for (const pattern of [`ai:cooldown:${id}:*`, `ai:comment:answered:${id}:*`, `ai:minute:*:${id}:*`]) {
+      let cursor = '0';
+      do {
+        const [next, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = next;
+        if (keys.length) await this.redis.del(...keys);
+      } while (cursor !== '0');
+    }
+    await this.redis.del(`connector:lock:${id}`);
+  }
+  async deleteLive(id: string) {
+    await this.stopLive(id);
+    await this.db.liveChannel.update({ where: { id }, data: { deletedAt: new Date() } });
+    this.io?.in(`live:${id}`).disconnectSockets(true);
+    try {
+      await this.purgeLiveRuntime(id);
+      await this.db.liveChannel.delete({ where: { id } });
+    } catch (error) {
+      await this.db.liveChannel.updateMany({ where: { id }, data: { deletedAt: null } });
+      throw error;
     }
   }
   async stopLive(id: string) {
@@ -144,7 +174,7 @@ class Services {
       const created = await this.db.aIWelcome.createMany({ data: [{ liveId: event.liveId, roomKey: roomKey!, userKey }], skipDuplicates: true });
       if (!created.count) return;
     }
-    try { await this.speechQueue.add('generate', { event }, { jobId: hash(event.eventId), priority, delay: isJoin ? 4000 : 0, removeOnComplete: 100, removeOnFail: 100, attempts: 2, backoff: { type: 'exponential', delay: 1000 } }); }
+    try { await this.speechQueue.add('generate', { event }, { jobId: hash(event.eventId), priority, delay: isJoin ? 4000 : 0, removeOnComplete: true, removeOnFail: true, attempts: 2, backoff: { type: 'exponential', delay: 1000 } }); }
     catch (error) {
       if (isJoin && roomKey) await this.db.aIWelcome.deleteMany({ where: { liveId: event.liveId, roomKey, userKey } });
       throw error;
@@ -168,7 +198,7 @@ class SessionGuard implements CanActivate {
 @Injectable()
 class PaidGuard implements CanActivate {
   constructor(private readonly services: Services) {}
-  canActivate(context: ExecutionContext) { this.services.requireLiveAccess(context.switchToHttp().getRequest<AuthedRequest>().principal!); return true; }
+  canActivate(context: ExecutionContext) { const req = context.switchToHttp().getRequest<AuthedRequest>(); if ((req.method === 'GET' && req.path === '/lives') || (req.method === 'DELETE' && /^\/lives\/[0-9a-f-]{36}$/i.test(req.path))) return true; this.services.requireLiveAccess(req.principal!); return true; }
 }
 
 @Controller()
@@ -343,7 +373,7 @@ class LivesController {
   @Post() async create(@Req() req: AuthedRequest, @Body() body: unknown) { this.editable(req); const d = parse(liveSchema, body); const quota = await this.s.db.userQuota.findUnique({ where: { userId: req.principal!.id } }); const count = await this.s.db.liveChannel.count({ where: { ownerId: req.principal!.id, deletedAt: null } }); if (count >= (quota?.maxLives ?? 3)) fail(403, 'LIVE quota reached'); return this.s.db.liveChannel.create({ data: { ...d, ownerId: req.principal!.id, ai: { create: {} }, audio: { create: {} }, scene: { create: {} } } }); }
   @Get(':id') async get(@Req() req: AuthedRequest, @Param('id') id: string) { return this.s.live(id, req); }
   @Patch(':id') async update(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(liveSchema.partial().extend({ autoReconnect: z.boolean().optional() }), body); return this.s.db.liveChannel.update({ where: { id }, data: d }); }
-  @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); await this.s.stopLive(id); await this.s.db.liveChannel.update({ where: { id }, data: { deletedAt: new Date() } }); await this.s.db.overlayToken.updateMany({ where: { liveId: id }, data: { revokedAt: new Date() } }); return { ok: true }; }
+  @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req, false); await this.s.deleteLive(id); return { ok: true }; }
   @Post(':id/connect') async connect(@Req() req: AuthedRequest, @Param('id') id: string) {
     this.editable(req);
     const live = (await this.s.live(id, req))!;
@@ -401,8 +431,8 @@ class LivesController {
       leaderboard: await this.s.leaderboard(id),
     };
   }
-  @Get(':id/ai-config') async ai(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.aIConfiguration.findUnique({ where: { liveId: id }, select: { enabled: true, personality: true, customPrompt: true, cooldownMs: true, maxPerMinute: true } }); }
-  @Get(':id/ai-usage') async aiUsage(@Req() req: AuthedRequest, @Param('id') id: string) { const live = (await this.s.live(id, req))!; const quota = await this.s.db.userQuota.findUnique({ where: { userId: live.ownerId } }); const limit = quota?.maxAiPerDay ?? 100; const day = new Date().toISOString().slice(0, 10); const used = Number(await this.s.redis.get(`ai:day:${live.ownerId}:${day}`) ?? 0); return { day, used, limit, remaining: Math.max(0, limit - used) }; }
+  @Get(':id/ai-config') async ai(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); const config = await this.s.db.aIConfiguration.findUnique({ where: { liveId: id }, select: { enabled: true, personality: true, customPrompt: true, cooldownMs: true, maxPerMinute: true, encryptedApiKey: true } }); return config && { enabled: config.enabled, personality: config.personality, customPrompt: config.customPrompt, cooldownMs: config.cooldownMs, maxPerMinute: config.maxPerMinute, hasCustomApiKey: Boolean(config.encryptedApiKey) }; }
+  @Get(':id/ai-usage') async aiUsage(@Req() req: AuthedRequest, @Param('id') id: string) { const live = (await this.s.live(id, req))!; const quota = await this.s.db.userQuota.findUnique({ where: { userId: live.ownerId } }); const limit = quota?.maxAiPerDay ?? 100; const ttsLimit = quota?.maxTtsPerDay ?? 100; const day = new Date().toISOString().slice(0, 10); const [aiCount, ttsCount] = await this.s.redis.mget(`ai:day:${live.ownerId}:${day}`, `tts:day:${live.ownerId}:${day}`); const used = Number(aiCount ?? 0), ttsUsed = Number(ttsCount ?? 0); return { day, used, limit, remaining: Math.max(0, limit - used), ttsUsed, ttsLimit, ttsRemaining: Math.max(0, ttsLimit - ttsUsed) }; }
   @Get(':id/ai-history') async aiHistory(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.aIInteraction.findMany({ where: { liveId: id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, answer: true, status: true, createdAt: true } }); }
   @Get(':id/conversation/:viewerKey') async conversation(@Req() req: AuthedRequest, @Param('id') id: string, @Param('viewerKey') viewerKey: string) {
     await this.s.live(id, req);
@@ -416,7 +446,7 @@ class LivesController {
       return [{ role: 'viewer', text: event.payload?.text ?? '', at: comment.occurredAt }, ...(reply?.answer ? [{ role: 'ai', text: reply.answer, at: reply.createdAt }] : [])];
     }) };
   }
-  @Put(':id/ai-config') async setAi(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ enabled: z.boolean().optional(), personality: z.string().max(100).optional(), customPrompt: z.string().max(2000).nullable().optional(), cooldownMs: z.number().int().min(1000).max(3600000).optional(), maxPerMinute: z.number().int().min(1).max(60).optional() }), body); return this.s.db.aIConfiguration.update({ where: { liveId: id }, data: d }); }
+  @Put(':id/ai-config') async setAi(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const { apiKey, ...d } = parse(z.object({ enabled: z.boolean().optional(), personality: z.string().max(100).optional(), customPrompt: z.string().max(2000).nullable().optional(), cooldownMs: z.number().int().min(1000).max(3600000).optional(), maxPerMinute: z.number().int().min(1).max(60).optional(), apiKey: z.string().trim().min(20).max(256).regex(/^\S+$/).nullable().optional() }), body); const encryptedApiKey = apiKey === undefined ? undefined : apiKey === null ? null : (() => { try { return encryptGeminiKey(apiKey, process.env.ENCRYPTION_KEY); } catch { fail(503, 'Máy chủ chưa cấu hình ENCRYPTION_KEY đủ mạnh'); } })(); const saved = await this.s.db.aIConfiguration.update({ where: { liveId: id }, data: { ...d, encryptedApiKey }, select: { enabled: true, personality: true, customPrompt: true, cooldownMs: true, maxPerMinute: true, encryptedApiKey: true } }); return { enabled: saved.enabled, personality: saved.personality, customPrompt: saved.customPrompt, cooldownMs: saved.cooldownMs, maxPerMinute: saved.maxPerMinute, hasCustomApiKey: Boolean(saved.encryptedApiKey) }; }
   @Get(':id/audio-config') async audio(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.audioConfiguration.findUnique({ where: { liveId: id } }); }
   @Put(':id/audio-config') async setAudio(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ musicUrl: z.url().nullable().optional(), musicVolume: z.number().int().min(0).max(100).optional(), ttsVolume: z.number().int().min(0).max(100).optional(), ttsEnabled: z.boolean().optional(), voiceId: z.enum(['vi-VN-Standard-A','vi-VN-Standard-D','vi-VN-Neural2-A','vi-VN-Neural2-D']).optional(), speakingRate: z.number().min(0.5).max(2).optional(), pitch: z.number().min(-10).max(10).optional(), woodenFishEnabled: z.boolean().optional(), woodenFishVolume: z.number().int().min(0).max(100).optional() }), body); if (d.musicUrl && !/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(d.musicUrl)) fail(400, 'Only HTTPS YouTube URLs supported'); const saved = await this.s.db.audioConfiguration.update({ where: { liveId: id }, data: d }); this.s.io?.to(`live:${id}`).emit('live.config', { audio: saved }); return saved; }
   @Get(':id/scene-config') async scene(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.sceneConfiguration.findUnique({ where: { liveId: id } }); }

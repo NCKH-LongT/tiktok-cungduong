@@ -232,6 +232,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           }
           if (audioContext.state !== 'running') throw new Error('Audio is suspended');
           const bytes = Uint8Array.from(atob(job.audio), character => character.charCodeAt(0));
+          job.audio = undefined;
           const buffer = await audioContext.decodeAudioData(bytes.buffer);
           const source = audioContext.createBufferSource();
           const gain = audioContext.createGain();
@@ -247,6 +248,9 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
             setVoiceReady(true);
             setVoiceBlocked(false);
           });
+          source.disconnect();
+          gain.disconnect();
+          source.buffer = null;
           if (currentSource === source) { currentSource = undefined; currentGain = undefined; }
           return true;
         } catch {
@@ -504,9 +508,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
       socket.on('speech.ready', (job: Speech) => {
         if (job.source === 'tiktok' && !liveActive) return;
         if (voicePlaybackBlocked) { speechQueue.splice(0, speechQueue.length, job); setSpeech(job.text); return; }
-        speechQueue.push(job);
-        if (previewMutedRef.current) speechQueue.splice(0, speechQueue.length - 1);
-        else if (speechQueue.length > 20) speechQueue.shift();
+        speechQueue.splice(0, speechQueue.length, job);
         if (!previewMutedRef.current) void playSpeech();
       });
     }

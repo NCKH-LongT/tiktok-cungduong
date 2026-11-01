@@ -1,1 +1,1 @@
-{"name":"@cd/shared","version":"0.1.0","private":true,"main":"dist/index.js","types":"dist/index.d.ts","scripts":{"build":"tsc -p tsconfig.json"},"dependencies":{"zod":"^4.0.0"}}
+{"name":"@cd/shared","version":"0.1.0","private":true,"main":"dist/index.js","types":"dist/index.d.ts","exports":{".":{"types":"./dist/index.d.ts","default":"./dist/index.js"},"./gemini-key":{"types":"./dist/gemini-key.d.ts","default":"./dist/gemini-key.js"}},"scripts":{"build":"tsc -p tsconfig.json"},"dependencies":{"zod":"^4.0.0"}}
