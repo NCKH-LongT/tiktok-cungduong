@@ -15,9 +15,9 @@ Mở `http://localhost:18091/admin/battle-assets`. Project Compose tên `tiktok-
 ## Quy trình
 
 1. Admin (SUPER_ADMIN hoặc ADMIN có quyền `battle.assets.manage`; bootstrap cấp quyền này cho role ADMIN) upload background hoặc sprite PNG.
-2. Với hai sprite sheet mẫu `tutien1.png` (xanh) và `tutien2.png` (đỏ), worker dùng profile đã đo trong `apps/sprite-worker/profiles.json`, OpenCV và Pillow để tự tách nền, cắt frame, gắn 15 animation và xuất atlas ngay sau upload. UI tự cập nhật khi render xong. Admin chỉ kiểm tra các frame có dấu ⚠, sửa crop/alpha/pivot/timeline khi cần và lưu nháp. Ảnh khác chưa có profile vẫn nhận crop `UNCLASSIFIED`; thêm profile theo checksum nguồn để mở rộng cho nhân vật khác.
+2. Với hai sprite sheet mẫu `tutien1.png` (xanh) và `tutien2.png` (đỏ), worker dùng profile đã đo trong `apps/sprite-worker/profiles.json`, OpenCV và Pillow để tự tách nền, cắt frame và xuất atlas ngay sau upload. Bộ mặc định gồm `idle` (tư thế đứng), `move` (di chuyển, lật ngang khi đi trái), `attack` (chém), `hit` (trúng đòn), `die` (chết). Đây là bốn động tác Battle cùng một tư thế đứng. UI tự cập nhật khi render xong. Admin kiểm tra các frame có dấu ⚠, sửa crop/alpha/pivot/timeline khi cần và lưu nháp. Ảnh khác chưa có profile vẫn nhận crop `UNCLASSIFIED`; thêm profile theo checksum nguồn để mở rộng cho nhân vật khác.
 3. Dùng crop (kéo, resize, tách/gộp), auto mask hoặc color key, erase/restore, padding và thuộc tính pivot/hitbox/hurtbox (có thể kéo trong preview) để sửa frame RGBA. Đánh dấu `Đã kiểm tra frame này` cho các frame bị cảnh báo. Lưu nháp để worker xuất lại PNG, atlas và metadata trên volume. Nút `Tạo phiên bản tự động mới` tạo version mới khi bản hiện tại đã có frame, giữ nguyên version cũ.
-4. Gắn frame vào các animation, thời lượng từng frame, root motion, transition và event. Mở Sprite Simulator kiểm tra hướng di chuyển theo `walk_left`/`walk_right`, combat minh họa, khung 9:16 và FPS đo được.
+4. Gắn frame vào các animation, thời lượng từng frame, root motion, transition và event. Mở Sprite Simulator kiểm tra `move` theo hai hướng nhờ lật ngang, combat minh họa, khung 9:16 và FPS đo được. Asset cũ với `walk_left`/`walk_right` vẫn được hỗ trợ.
 5. Validate → Approve → Publish. Upload không tự publish. Phiên bản cũ vẫn có URL theo số version; rollback chỉ đổi con trỏ active.
 
 Nếu `Approve` bị khóa, mở tab **Published Assets** và bấm **Validate**. Các cảnh báo của lần kiểm tra mới nhất hiện ngay dưới version. Với sprite tự cắt, mở **Frame Editor**, kiểm tra từng frame có dấu ⚠, đánh dấu **Đã kiểm tra frame này**, rồi **Lưu nháp** để worker xuất lại atlas. Khi render xong, bấm **Validate** lần nữa. Chỉ khi trạng thái là `READY_FOR_TEST` thì `Approve` bật; sau đó bấm `Publish`. Battle Arena chỉ liệt kê asset đã Publish.
@@ -44,7 +44,7 @@ Mỗi thư mục xuất `source.png`, `frames/*.png`, `atlas.png`, `atlas.json`,
 
 ## Kết quả hiện tại và điểm cần duyệt
 
-Đã test pipeline với hai ảnh thật: `tutien1.png` tạo 84 frame, `tutien2.png` tạo 94 frame; cả hai có 15 timeline, atlas không vượt 4096 px mỗi cạnh và không còn frame rỗng trong kiểm thử hiện tại. Vùng chồng hiệu ứng được đánh dấu REVIEW_REQUIRED, vẫn cần admin xem trước khi publish. File `arena-fight.png` là ảnh nền nhưng chưa có ground zone được duyệt.
+Pipeline trước đây tạo 84/94 frame và 15 timeline. Cấu hình mới chỉ chọn các dải `idle`, `walk_right` (đặt tên `move`), `attack`, `hit`, `die`. Test trong battle-worker image tạo 30 frame cho `tutien1.png` (4 frame cần xem lại) và 33 frame cho `tutien2.png` (không có cảnh báo tự động). Admin vẫn cần xem hình ảnh thực tế trước khi publish. Các version cũ giữ nguyên; bấm **Tạo phiên bản tự động mới** trên từng asset mẫu để tạo bản gọn, rồi kiểm tra và duyệt. File `arena-fight.png` là ảnh nền nhưng chưa có ground zone được duyệt.
 
 Đã thử luồng end-to-end bằng sprite fixture nhân tạo trong database test: upload → render atlas → validate → approve → publish v1 → publish v2 → rollback v1. Tài khoản USER đọc được atlas v2 đã lưu (phục vụ trận đang pin version) và danh sách published, nhưng bị từ chối xem draft (HTTP 403). Fixture đã được dọn khỏi database/volume sau browser test. Ba ảnh thật vẫn chỉ ở trạng thái cần duyệt.
 
@@ -53,6 +53,9 @@ Mỗi thư mục xuất `source.png`, `frames/*.png`, `atlas.png`, `atlas.json`,
 Repository hiện chưa có Battle Engine backend hay trận đấu tính điểm cho Tu Tiên Battle Arena. Sprite Simulator là môi trường preview độc lập; HP/damage ở đó chỉ minh họa. Battle OBS gắn LIVE và pin version theo cấu hình, nhưng combat authoritative và pin version theo từng match vẫn cần Battle Engine riêng trước khi sử dụng production. Farm Công Đức vẫn dùng renderer cũ.
 
 ## Bàn giao để tiếp tục sau (2026-11-02)
+
+- Theo yêu cầu mới, profile tự cắt chỉ chọn 5 timeline gồm `idle`, `move`, `attack`, `hit`, `die`; Validate không bắt buộc `fall` hoặc hai dải đi trái/phải riêng. `move` lật ngang để chạy hai hướng. Version đã tạo với 15 timeline không đổi; tạo version tự động mới để dùng cấu hình gọn. Các frame được đánh dấu ⚠ vẫn phải được admin xem và duyệt.
+- Docker Battle test đã tạo bản nháp mới: `tutien1` v5 có 30 frame, Validate còn 4 cảnh báo crop (`attack_04`, `hit_03`, `hit_04`, `hit_05`); `tutien2` v4 có 33 frame, Validate đạt `READY_FOR_TEST` với 0 cảnh báo. Chưa Approve hoặc Publish; admin cần xem chuyển động trực tiếp trong Simulator trước khi dùng ở Battle Arena.
 
 - Nhánh làm việc: `feature/battle-arena`, PR nháp [#1](https://github.com/NCKH-LongT/tiktok-cungduong/pull/1). Bản triển khai gần nhất trước ghi chú này là commit `45856c6`. Không gộp vào `main` hoặc kích hoạt Jenkins production khi Battle chưa hoàn chỉnh.
 - Dữ liệu Docker test hiện có ba asset thật, đều `NEEDS_REVIEW`: `tutien1` (màu xanh, 84 frame, 17 cảnh báo Validate), `tutien2` (màu đỏ, 94 frame, 21 cảnh báo) và `arena-fight` (background, 1 bản kiểm tra còn cảnh báo). Danh sách Battle rỗng là đúng vì chưa asset nào được Publish. Không tự đánh dấu các frame đã duyệt hoặc tự Publish.

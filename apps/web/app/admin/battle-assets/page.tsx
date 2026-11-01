@@ -101,19 +101,9 @@ const tabs = [
 ] as const;
 const actions = [
   "idle",
-  "walk_left",
-  "walk_right",
-  "run_left",
-  "run_right",
+  "move",
   "attack",
-  "combo1",
-  "combo2",
-  "skill_q",
-  "skill_w",
-  "skill_e",
-  "skill_r",
   "hit",
-  "fall",
   "die",
 ];
 const blankAnimation = (): Animation => ({
@@ -1429,6 +1419,7 @@ export default function BattleAssetsPage() {
                     loop: !["attack", "fall", "die", "hit"].includes(
                       animationName,
                     ),
+                    allowFlipX: animationName === "move",
                     holdLastFrame: animationName === "die",
                   })
                 }

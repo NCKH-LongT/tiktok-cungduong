@@ -30,6 +30,8 @@ const elementOf = (asset?: Asset | null) =>
     (asset?.versions[0]?.metadata as { character?: { element?: string } })
       ?.character?.element ?? ""
   ).toLowerCase();
+const movementFor = (metadata: BattleMetadata, left: boolean) =>
+  metadata.animations.move ? "move" : left ? "walk_left" : "walk_right";
 export default function Simulator() {
   const { characterId } = useParams<{ characterId: string }>();
   const [asset, setAsset] = useState<Asset | null>(null),
@@ -133,7 +135,7 @@ export default function Simulator() {
   const activeVersion = asset?.versions[0];
   const opponentAsset = others.find((x) => x.id === opponent);
   const opponentVersion = opponentAsset?.versions[0];
-  const directionalAnimation = movementAnimation(elapsed);
+  const directionalAnimation = movementAnimation(elapsed, meta?.animations);
   const activeAnimation =
     mode === "direction" && meta?.animations[directionalAnimation]
       ? directionalAnimation
@@ -151,7 +153,7 @@ export default function Simulator() {
   const combatAnimation =
     mode === "combat"
       ? phase < 1500
-        ? "walk_right"
+        ? meta ? movementFor(meta, false) : "move"
         : phase < 2500
           ? "attack"
           : "idle"
@@ -162,7 +164,17 @@ export default function Simulator() {
       frameAt(
         metadata,
         name,
-        elapsed,
+        Math.max(
+          0,
+          phase -
+            (name === "attack"
+              ? 1500
+              : name === "hit"
+                ? 2500
+                : name === "die"
+                  ? 3300
+                  : 0),
+        ),
         metadata.animations[name]?.loop ?? false,
         speed,
       );
@@ -176,7 +188,11 @@ export default function Simulator() {
       x: directionX,
       y: anchorY,
       scale: 0.55,
-      flipX: flip,
+      flipX:
+        flip ||
+        (mode === "direction" &&
+          directionalAnimation === "move" &&
+          Math.cos(elapsed / 650) < 0),
       label: nickname || asset.name,
       avatarUrl: avatarUrl.startsWith("https://") ? avatarUrl : undefined,
     };
@@ -194,14 +210,12 @@ export default function Simulator() {
         frameId: combatFrame(
           opponentMeta,
           phase < 1500
-            ? "walk_left"
+            ? movementFor(opponentMeta, true)
             : phase < 2500
               ? "idle"
               : phase < 3300
                 ? "hit"
-                : phase < 3900
-                  ? "fall"
-                  : "die",
+                : "die",
         ),
         x: 430 - Math.min(140, phase / 10) + (phase > 2500 ? 30 : 0),
         y: anchorY,
@@ -212,7 +226,12 @@ export default function Simulator() {
       if (elementOf(asset) === "ice" && elementOf(opponentAsset) === "fire") {
         const red = {
           ...blue,
-          frameId: combatFrame(opponentMeta, combatAnimation),
+          frameId: combatFrame(
+            opponentMeta,
+            phase < 1500
+              ? movementFor(opponentMeta, false)
+              : combatAnimation,
+          ),
           x: 110 + Math.min(140, phase / 10),
           flipX: false,
         };
@@ -221,14 +240,12 @@ export default function Simulator() {
           frameId: combatFrame(
             meta,
             phase < 1500
-              ? "walk_left"
+              ? movementFor(meta, true)
               : phase < 2500
                 ? "idle"
                 : phase < 3300
                   ? "hit"
-                  : phase < 3900
-                    ? "fall"
-                    : "die",
+                  : "die",
           ),
           x: 430 - Math.min(140, phase / 10) + (phase > 2500 ? 30 : 0),
           flipX: true,
@@ -243,6 +260,7 @@ export default function Simulator() {
     asset,
     activeVersion,
     combatAnimation,
+    directionalAnimation,
     elapsed,
     loop,
     speed,
@@ -550,16 +568,18 @@ export default function Simulator() {
         <ul>
           {[
             "idle",
-            "walk_left",
-            "walk_right",
+            "move",
             "attack",
             "hit",
-            "fall",
             "die",
           ].map((name) => (
             <li key={name}>
-              {meta?.animations[name]?.frames.length ? "✓" : "⚠"} {name}:{" "}
-              {meta?.animations[name]?.frames.length ?? 0} frame
+              {name === "move"
+                ? (meta?.animations.move?.frames.length || meta?.animations.walk_right?.frames.length || meta?.animations.walk_left?.frames.length ? "✓" : "⚠")
+                : (meta?.animations[name]?.frames.length ? "✓" : "⚠")} {name}:{" "}
+              {name === "move"
+                ? (meta?.animations.move?.frames.length ?? meta?.animations.walk_right?.frames.length ?? meta?.animations.walk_left?.frames.length ?? 0)
+                : (meta?.animations[name]?.frames.length ?? 0)} frame
             </li>
           ))}
         </ul>

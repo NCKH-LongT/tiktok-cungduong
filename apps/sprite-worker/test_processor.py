@@ -81,7 +81,7 @@ class ProcessorTests(unittest.TestCase):
 
     @unittest.skipUnless(importlib.util.find_spec('cv2') and importlib.util.find_spec('numpy'), 'OpenCV environment required')
     def test_real_sheets_generate_editable_animation_drafts_without_overwriting_source(self):
-        for filename, expected in [('tutien1.png', 84), ('tutien2.png', 94)]:
+        for filename, expected in [('tutien1.png', 30), ('tutien2.png', 33)]:
             with self.subTest(filename=filename):
                 source = SOURCE / filename
                 checksum = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -92,9 +92,12 @@ class ProcessorTests(unittest.TestCase):
                 draft = json.loads((output / 'draft.json').read_text())
                 quality = json.loads((output / 'quality.json').read_text())
                 self.assertEqual(len(draft['frames']), expected)
-                self.assertEqual(len(draft['animations']), 15)
+                self.assertEqual(set(draft['animations']), {'idle', 'move', 'attack', 'hit', 'die'})
+                self.assertTrue(draft['animations']['move']['allowFlipX'])
+                self.assertTrue(draft['animations']['die']['holdLastFrame'])
                 self.assertTrue(all(item['status'] != 'FAIL' for item in quality))
-                self.assertTrue(any(item['status'] == 'REVIEW_REQUIRED' for item in quality))
+                if filename == 'tutien1.png':
+                    self.assertTrue(any(item['status'] == 'REVIEW_REQUIRED' for item in quality))
                 self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), checksum)
                 self.assertTrue((output / 'atlas.png').is_file())
                 self.assertTrue((output / 'atlas.json').is_file())

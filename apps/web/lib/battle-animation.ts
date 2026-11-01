@@ -33,6 +33,8 @@ export function frameAt(
 
 export function movementAnimation(
   elapsedMs: number,
-): "walk_left" | "walk_right" {
+  animations: Record<string, unknown> = {},
+): "move" | "walk_left" | "walk_right" {
+  if (animations.move) return "move";
   return Math.cos(elapsedMs / 650) >= 0 ? "walk_right" : "walk_left";
 }

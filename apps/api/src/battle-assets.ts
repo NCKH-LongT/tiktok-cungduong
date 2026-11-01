@@ -480,15 +480,20 @@ export class BattleAssetsController {
         warnings.push("Atlas not rendered");
       for (const action of [
         "idle",
-        "walk_left",
-        "walk_right",
         "attack",
         "hit",
-        "fall",
         "die",
       ])
         if (!data.animations?.[action]?.frames?.length)
           warnings.push(`${action} animation required`);
+      if (
+        !data.animations?.move?.frames?.length &&
+        !data.animations?.walk_right?.frames?.length &&
+        !data.animations?.walk_left?.frames?.length
+      )
+        warnings.push("move animation required");
+      if (data.animations?.move?.frames?.length && !data.animations.move.allowFlipX)
+        warnings.push("move must allow horizontal flip");
       if (!data.animations?.die?.holdLastFrame)
         warnings.push("die must hold last frame");
       if (

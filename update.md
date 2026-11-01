@@ -11,6 +11,8 @@ Nhánh phát triển:
 
 `feature/battle-arena`
 
+**Điều chỉnh phạm vi ngày 2026-11-02:** Bộ animation mặc định cho nhân vật Battle được rút xuống bốn động tác `move`, `attack`, `hit`, `die` và một tư thế nghỉ `idle`. `move` dùng cùng dải frame cho hai hướng bằng `allowFlipX`; admin vẫn có thể thêm animation khác trong Studio nếu cần. Yêu cầu liệt kê 15 animation, `fall`, và hai dải đi trái/phải riêng ở các mục bên dưới là phạm vi cũ, không còn là điều kiện bắt buộc để Validate/Approve nhân vật mới. Asset đã tạo theo phạm vi cũ vẫn phải đọc được.
+
 Nếu đã có nhánh này, tiếp tục phát triển trên nhánh đó. Không reset, không ghi đè công việc trước đó.
 
 Nếu chưa có, tạo nhánh từ `origin/main`.

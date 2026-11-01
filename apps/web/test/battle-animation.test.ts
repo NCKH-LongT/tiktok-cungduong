@@ -36,6 +36,8 @@ test("loops and applies speed without changing frame order", () => {
 
 test("holds the final die frame and selects movement direction", () => {
   assert.equal(frameAt(metadata, "die", 10000, false, 1), "dead");
+  assert.equal(movementAnimation(0, { move: {} }), "move");
+  assert.equal(movementAnimation(2100, { move: {} }), "move");
   assert.equal(movementAnimation(0), "walk_right");
   assert.equal(movementAnimation(2100), "walk_left");
 });

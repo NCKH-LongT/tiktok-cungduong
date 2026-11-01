@@ -122,8 +122,8 @@ def propose(source_path, image):
             timeline.append({'frameId': frame_id, 'durationMs': 120 if action == 'idle' else 95,
                              'events': events})
         direction = 'left' if action.endswith('_left') else 'right' if action.endswith('_right') else 'none'
-        animations[action] = {'loop': action in ('idle', 'walk_left', 'walk_right', 'run_left', 'run_right'),
-                              'speed': 1, 'direction': direction, 'allowFlipX': False,
+        animations[action] = {'loop': action in ('idle', 'move', 'walk_left', 'walk_right', 'run_left', 'run_right'),
+                              'speed': 1, 'direction': direction, 'allowFlipX': action == 'move',
                               'holdLastFrame': action == 'die', 'priority': 0,
                               'rootMotion': {'x': 0, 'y': 0}, 'transitions': [], 'frames': timeline}
     idle_heights = [f['crop']['height'] for f in frames if f['id'].startswith('idle_')]
