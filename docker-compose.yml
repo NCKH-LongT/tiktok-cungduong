@@ -94,10 +94,27 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
       GEMINI_RPM_LIMIT: ${GEMINI_RPM_LIMIT:-5}
       TTS_RPM_LIMIT: ${TTS_RPM_LIMIT:-30}
+      LOCAL_TTS_URL: http://local-tts:8092/synthesize
     volumes:
       - ./secrets:/run/secrets:ro
     depends_on:
       api: { condition: service_healthy }
+      local-tts: { condition: service_healthy }
+    restart: unless-stopped
+  local-tts:
+    image: tiktok-cungduong-local-tts:0.1.3
+    build: { context: ., dockerfile: infrastructure/local-tts/Dockerfile }
+    environment:
+      HF_HOME: /models
+      LOCAL_TTS_VOICE: ${LOCAL_TTS_VOICE:-khanh_vy}
+      LOCAL_TTS_THREADS: ${LOCAL_TTS_THREADS:-2}
+    volumes:
+      - tts-models:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8092/health', timeout=2)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
   nginx:
     image: nginx:1.27-alpine
@@ -134,3 +151,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  tts-models:

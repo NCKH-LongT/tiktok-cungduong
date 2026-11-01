@@ -10,6 +10,7 @@ import { decryptGeminiKey } from '@cd/shared/gemini-key';
 import { asNumber, asRecord, asString, normalizeTikTokComment, normalizeTikTokGift, normalizeTikTokUser } from './tiktok-events.js';
 import { addressViewer } from './ai-text.js';
 import { perMinute, reserveDailyTtsSlot, waitForProviderSlot } from './provider-rate-limit.js';
+import { isValidMp3, synthesizeLocalSpeech } from './local-tts.js';
 
 const db = new PrismaClient();
 const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest: null });
@@ -189,17 +190,27 @@ async function runAI() {
         if (!(await reserveDailyTtsSlot(redis, dayKey, quota?.maxTtsPerDay ?? 100))) voiceStatus = 'tts_daily_limit';
         else {
           await waitForProviderSlot(redis, 'tts', ttsRpm);
-          const [result] = await tts.synthesizeSpeech({ input: { text }, voice: { languageCode: 'vi-VN', name: voice?.voiceId ?? 'vi-VN-Standard-A' }, audioConfig: { audioEncoding: 'MP3', speakingRate: voice?.speakingRate ?? 1, pitch: voice?.pitch ?? 0 } });
-          audio = Buffer.from(result.audioContent ?? '').toString('base64') || undefined;
-          voiceStatus = audio ? 'audio_ready' : 'tts_error';
+          const [result] = await tts.synthesizeSpeech({ input: { text }, voice: { languageCode: 'vi-VN', name: voice?.voiceId ?? 'vi-VN-Standard-A' }, audioConfig: { audioEncoding: 'MP3', speakingRate: voice?.speakingRate ?? 1, pitch: voice?.pitch ?? 0 } }, { timeout: 15000 });
+          const mp3 = typeof result.audioContent === 'string' ? Buffer.from(result.audioContent, 'base64') : Buffer.from(result.audioContent ?? []);
+          if (!isValidMp3(mp3)) throw new Error('Google TTS returned invalid MP3');
+          audio = mp3.toString('base64');
+          voiceStatus = 'audio_ready';
         }
       } catch (error) {
         const code = Number((error as { code?: unknown })?.code);
         voiceStatus = code === 8 || code === 429 ? 'tts_provider_limit' : 'tts_error';
-        console.warn('Google TTS unavailable; sending Vietnamese text for browser speech:', errorMessage(error));
+        console.warn('Google TTS unavailable; trying local Vietnamese TTS:', errorMessage(error));
       }
     }
-    await db.aIInteraction.update({ where: { id: interaction.id }, data: { status: audio && usedFallback ? 'fallback_audio' : voiceStatus } });
+    if (voiceEnabled && !audio && process.env.LOCAL_TTS_URL) {
+      try {
+        audio = await synthesizeLocalSpeech(process.env.LOCAL_TTS_URL, text, voice?.speakingRate ?? 1);
+        voiceStatus = usedFallback ? 'fallback_local_audio' : 'local_audio_ready';
+      } catch (error) {
+        console.warn('Local Vietnamese TTS unavailable; trying browser speech:', errorMessage(error));
+      }
+    }
+    await db.aIInteraction.update({ where: { id: interaction.id }, data: { status: audio && usedFallback && voiceStatus === 'audio_ready' ? 'fallback_audio' : voiceStatus } });
     if (input.source === 'tiktok') {
       const live = await db.liveChannel.findUnique({ where: { id: input.liveId }, select: { status: true, owner: { select: { role: true, accessUntil: true } } } });
       if (live?.status !== 'connected' || !hasLiveAccess(live.owner.role, live.owner.accessUntil)) return;

@@ -232,7 +232,6 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           }
           if (audioContext.state !== 'running') throw new Error('Audio is suspended');
           const bytes = Uint8Array.from(atob(job.audio), character => character.charCodeAt(0));
-          job.audio = undefined;
           const buffer = await audioContext.decodeAudioData(bytes.buffer);
           const source = audioContext.createBufferSource();
           const gain = audioContext.createGain();
@@ -245,6 +244,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
             const timer = setTimeout(() => { try { source.stop(); } catch { resolve(); } }, 120000);
             source.onended = () => { clearTimeout(timer); resolve(); };
             source.start();
+            job.audio = undefined;
             setVoiceReady(true);
             setVoiceBlocked(false);
           });
@@ -254,6 +254,7 @@ export default function Overlay({ params }: { params: Promise<{ id: string }> })
           if (currentSource === source) { currentSource = undefined; currentGain = undefined; }
           return true;
         } catch {
+          if (audioContext?.state === 'running') job.audio = undefined;
           currentSource = undefined;
           currentGain = undefined;
           setVoiceBlocked(true);
