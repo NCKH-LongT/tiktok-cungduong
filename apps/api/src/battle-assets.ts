@@ -25,6 +25,7 @@ import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import type { Request, Response } from "express";
 import { z } from "zod";
+import { hasLiveAccess } from "@cd/shared";
 
 const root = path.resolve(
   process.env.BATTLE_ASSET_ROOT ?? "/var/lib/cungduong/battle-assets",
@@ -214,6 +215,16 @@ export class BattleAssetsService implements OnModuleDestroy {
     if (!grant) err(403, "battle.assets.manage required");
     return user;
   }
+  async overlay(liveId: string, token: string) {
+    parseId(liveId);
+    if (typeof token !== "string" || token.length < 32) err(401, "Invalid overlay token");
+    const active = await this.db.overlayToken.findFirst({
+      where: { liveId, tokenHash: createHash("sha256").update(token).digest("hex"), revokedAt: null, live: { deletedAt: null } },
+      include: { live: { include: { owner: { select: { role: true, accessUntil: true } } } } },
+    });
+    if (!active) err(401, "Invalid overlay token");
+    if (!hasLiveAccess(active!.live.owner.role, active!.live.owner.accessUntil)) err(402, "LIVE access expired");
+  }
 }
 
 @Controller("battle-assets")
@@ -270,7 +281,7 @@ export class BattleAssetsController {
     await this.s.canManage(req);
     return this.s.db.battleAsset.findMany({
       include: {
-        versions: { orderBy: { version: "desc" } },
+        versions: { orderBy: { version: "desc" }, include: { validations: { orderBy: { createdAt: "desc" }, take: 1 } } },
         character: true,
         background: true,
       },
@@ -723,6 +734,8 @@ export class BattleAssetsController {
     @Param("id") id: string,
     @Param("file") name: string,
     @Query("version") versionText?: string,
+    @Query("liveId") liveId?: string,
+    @Query("token") token?: string,
   ) {
     parseId(id);
     const asset = await this.s.db.battleAsset.findUnique({
@@ -734,7 +747,16 @@ export class BattleAssetsController {
       ? asset!.versions.find((v) => v.version === Number(versionText))
       : asset!.versions.find((v) => v.status === "PUBLISHED");
     const isOriginal = name === "original";
-    if (isOriginal || !version || !version.publishedAt)
+    if (token && liveId && !isOriginal && version?.publishedAt) {
+      await this.s.overlay(liveId, token);
+      const config = await this.s.db.battleLiveConfiguration.findUnique({ where: { liveId } });
+      const pinned = config && [
+        [config.leftAssetId, config.leftVersion],
+        [config.rightAssetId, config.rightVersion],
+        [config.backgroundAssetId, config.backgroundVersion],
+      ].some(([configuredId, configuredVersion]) => configuredId === id && configuredVersion === version.version);
+      if (!pinned) err(403, "Asset is not configured for this LIVE");
+    } else if (isOriginal || !version || !version.publishedAt)
       await this.s.canManage(req);
     else await this.s.user(req);
     let key: string;

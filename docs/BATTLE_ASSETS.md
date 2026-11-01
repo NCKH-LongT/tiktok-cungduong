@@ -20,6 +20,17 @@ Mở `http://localhost:18091/admin/battle-assets`. Project Compose tên `tiktok-
 4. Gắn frame vào các animation, thời lượng từng frame, root motion, transition và event. Mở Sprite Simulator kiểm tra hướng di chuyển theo `walk_left`/`walk_right`, combat minh họa, khung 9:16 và FPS đo được.
 5. Validate → Approve → Publish. Upload không tự publish. Phiên bản cũ vẫn có URL theo số version; rollback chỉ đổi con trỏ active.
 
+Nếu `Approve` bị khóa, mở tab **Published Assets** và bấm **Validate**. Các cảnh báo của lần kiểm tra mới nhất hiện ngay dưới version. Với sprite tự cắt, mở **Frame Editor**, kiểm tra từng frame có dấu ⚠, đánh dấu **Đã kiểm tra frame này**, rồi **Lưu nháp** để worker xuất lại atlas. Khi render xong, bấm **Validate** lần nữa. Chỉ khi trạng thái là `READY_FOR_TEST` thì `Approve` bật; sau đó bấm `Publish`. Battle Arena chỉ liệt kê asset đã Publish.
+
+## Gắn với TikTok LIVE để xem Battle trong OBS
+
+1. Tạo LIVE ID (ví dụ `@thaobedim`) ở Dashboard. Cần ít nhất hai nhân vật đã Publish trong Sprite Studio.
+2. Mở **Battle Arena** từ Dashboard, chọn LIVE ID, hai nhân vật và background, rồi bấm **Gắn nhân vật vào LIVE**. API kiểm tra quyền sở hữu LIVE và trạng thái Publish, đồng thời lưu version cố định cho LIVE này.
+3. Bấm **Tạo liên kết Battle cho OBS**. Dùng URL được cấp trong OBS Browser Source 1080 × 1920. URL chứa token bí mật; có thể thu hồi token trong tab Overlay của Dashboard LIVE (thao tác này thu hồi cả URL overlay Farm).
+4. Mở Dashboard của LIVE đó và bấm **Kết nối TikTok**. Trong môi trường Docker Battle test, TikTok connector đang tắt; dùng tab **Simulator** trên Dashboard để gửi `viewer.join` hoặc `gift.received` và xem Battle OBS đổi tên, avatar và phát `attack`/`hit`. Tải lại Battle OBS không phát lại sự kiện cũ.
+
+Battle OBS hiện là renderer sự kiện trực tiếp. Nó chưa có Battle Engine authoritative cho HP, hit, damage, đội hình nhiều người hoặc kết quả trận; các hoạt ảnh quà chỉ để thử luồng TikTok → OBS. Không dùng nó làm trận đấu tính điểm trước khi hoàn thành Battle Engine.
+
 Mỗi asset có checksum SHA-256 bản gốc, atlas có checksum riêng. Các file gốc và version được lưu tại `BATTLE_ASSET_ROOT` (mặc định `/var/lib/cungduong/battle-assets`). Ảnh thật mẫu nằm trong `assets/battle/source/`. Bản tự cắt được lưu ở trạng thái `NEEDS_REVIEW`, không tự publish. `quality.json` liệt kê PASS, REVIEW_REQUIRED hoặc FAIL; `metadata.json` phục vụ BattlePreview và `atlas.json` tương thích Phaser 3 Hash atlas.
 
 Có thể tái tạo ra thư mục rỗng bằng CLI (chạy trong battle-worker image, có Pillow/NumPy/OpenCV):
@@ -39,4 +50,4 @@ Mỗi thư mục xuất `source.png`, `frames/*.png`, `atlas.png`, `atlas.json`,
 
 Đã thử tài khoản ADMIN đọc danh sách draft (HTTP 200), USER bị từ chối (HTTP 403); xóa fixture chưa publish trả HTTP 200, xóa dữ liệu/file và ghi một audit log `battle.asset.delete`.
 
-Repository hiện không có Battle Engine backend hay trận đấu TikTok cho Tu Tiên Battle Arena. Sprite Simulator là môi trường preview độc lập; HP/damage ở đó chỉ minh họa. Tích hợp combat authoritative và pin version theo match cần một Battle Engine riêng trước khi sử dụng production. Farm Công Đức vẫn dùng renderer cũ.
+Repository hiện chưa có Battle Engine backend hay trận đấu tính điểm cho Tu Tiên Battle Arena. Sprite Simulator là môi trường preview độc lập; HP/damage ở đó chỉ minh họa. Battle OBS gắn LIVE và pin version theo cấu hình, nhưng combat authoritative và pin version theo từng match vẫn cần Battle Engine riêng trước khi sử dụng production. Farm Công Đức vẫn dùng renderer cũ.

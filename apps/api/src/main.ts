@@ -397,6 +397,43 @@ class LivesController {
   @Get() async list(@Req() req: AuthedRequest) { return this.s.db.liveChannel.findMany({ where: { ownerId: req.principal!.id, deletedAt: null }, orderBy: { createdAt: 'desc' } }); }
   @Post() async create(@Req() req: AuthedRequest, @Body() body: unknown) { this.editable(req); const d = parse(liveSchema, body); const quota = await this.s.db.userQuota.findUnique({ where: { userId: req.principal!.id } }); const count = await this.s.db.liveChannel.count({ where: { ownerId: req.principal!.id, deletedAt: null } }); if (count >= (quota?.maxLives ?? 3)) fail(403, 'LIVE quota reached'); return this.s.db.liveChannel.create({ data: { ...d, ownerId: req.principal!.id, ai: { create: {} }, audio: { create: {} }, scene: { create: {} } } }); }
   @Get(':id') async get(@Req() req: AuthedRequest, @Param('id') id: string) { return this.s.live(id, req); }
+  @Get(':id/battle-config') async battleConfig(@Req() req: AuthedRequest, @Param('id') id: string) {
+    await this.s.live(id, req);
+    return await this.s.db.battleLiveConfiguration.findUnique({ where: { liveId: id } }) ?? { configured: false };
+  }
+  @Put(':id/battle-config') async setBattleConfig(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) {
+    this.editable(req);
+    await this.s.live(id, req);
+    const data = parse(z.object({
+      leftAssetId: uuid,
+      rightAssetId: uuid,
+      backgroundAssetId: uuid.nullable(),
+    }), body);
+    if (data.leftAssetId === data.rightAssetId) fail(400, 'Chọn hai nhân vật khác nhau');
+    const ids = [data.leftAssetId, data.rightAssetId, ...(data.backgroundAssetId ? [data.backgroundAssetId] : [])];
+    const assets = await this.s.db.battleAsset.findMany({
+      where: { id: { in: ids } },
+      include: { versions: { where: { status: 'PUBLISHED' }, orderBy: { version: 'desc' }, take: 1 } },
+    });
+    const getAsset = (assetId: string, kind: 'SPRITE' | 'BACKGROUND') => {
+      const asset = assets.find(item => item.id === assetId && item.kind === kind);
+      if (!asset?.versions[0]) fail(409, `${kind === 'SPRITE' ? 'Nhân vật' : 'Background'} chưa được Publish`);
+      return asset!.versions[0];
+    };
+    const left = getAsset(data.leftAssetId, 'SPRITE');
+    const right = getAsset(data.rightAssetId, 'SPRITE');
+    const background = data.backgroundAssetId ? getAsset(data.backgroundAssetId, 'BACKGROUND') : null;
+    const values = {
+      leftAssetId: data.leftAssetId, leftVersion: left.version,
+      rightAssetId: data.rightAssetId, rightVersion: right.version,
+      backgroundAssetId: data.backgroundAssetId, backgroundVersion: background?.version ?? null,
+    };
+    const saved = await this.s.db.battleLiveConfiguration.upsert({
+      where: { liveId: id }, create: { liveId: id, ...values }, update: values,
+    });
+    this.s.io?.to(`live:${id}`).emit('battle.config', saved);
+    return saved;
+  }
   @Patch(':id') async update(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(liveSchema.partial().extend({ autoReconnect: z.boolean().optional() }), body); return this.s.db.liveChannel.update({ where: { id }, data: d }); }
   @Delete(':id') async remove(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req, false); await this.s.deleteLive(id); return { ok: true }; }
   @Post(':id/connect') async connect(@Req() req: AuthedRequest, @Param('id') id: string) {
@@ -479,6 +516,14 @@ class LivesController {
   @Get(':id/rules') async rules(@Req() req: AuthedRequest, @Param('id') id: string) { await this.s.live(id, req); return this.s.db.liveRule.findMany({ where: { liveId: id } }); }
   @Post(':id/rules') async addRule(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(z.object({ triggerType: z.string().max(50), enabled: z.boolean().default(true), actions: z.array(z.object({ type: z.enum(['spawn.character','character.show.comment','camera.focus','sound.play.wooden.fish']) })).max(10), cooldownMs: z.number().int().min(0).max(3600000).default(0), priority: z.number().int().min(-100).max(100).default(0) }), body); return this.s.db.liveRule.create({ data: { ...d, liveId: id } }); }
   @Post(':id/overlay-token/rotate') async rotate(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); const token = randomBytes(32).toString('base64url'); await this.s.db.$transaction([this.s.db.overlayToken.updateMany({ where: { liveId: id, revokedAt: null }, data: { revokedAt: new Date() } }), this.s.db.overlayToken.create({ data: { liveId: id, tokenHash: hash(token) } })]); await this.s.disconnectOverlays(id); return { url: `${process.env.PUBLIC_OVERLAY_URL ?? 'http://localhost:3000'}/overlay/${id}?token=${token}` }; }
+  @Post(':id/battle-overlay-token') async battleOverlayToken(@Req() req: AuthedRequest, @Param('id') id: string) {
+    this.editable(req);
+    await this.s.live(id, req);
+    if (!await this.s.db.battleLiveConfiguration.findUnique({ where: { liveId: id } })) fail(409, 'Hãy gắn hai nhân vật đã Publish vào LIVE trước');
+    const token = randomBytes(32).toString('base64url');
+    await this.s.db.overlayToken.create({ data: { liveId: id, tokenHash: hash(token) } });
+    return { url: `${process.env.PUBLIC_OVERLAY_URL ?? 'http://localhost:3000'}/battle-arena/live/${id}?token=${token}` };
+  }
   @Post(':id/overlay-token/revoke') async revoke(@Req() req: AuthedRequest, @Param('id') id: string) { this.editable(req); await this.s.live(id, req); await this.s.db.overlayToken.updateMany({ where: { liveId: id }, data: { revokedAt: new Date() } }); await this.s.disconnectOverlays(id); return { ok: true }; }
   @Post(':id/simulate') async simulate(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: unknown) { this.editable(req); await this.s.live(id, req); const d = parse(simulationSchema, body); const event: LiveEvent = { eventId: crypto.randomUUID(), liveId: id, source: 'simulator', eventType: d.eventType, timestamp: new Date().toISOString(), user: d.user, payload: d.payload }; await this.s.publish(event, d.ai); return event; }
 }
@@ -486,6 +531,10 @@ class LivesController {
 @Controller('overlay')
 class OverlayController {
   constructor(private readonly s: Services) {}
+  @Get(':id/battle-config') async battleConfig(@Param('id') id: string, @Query('token') token: string) {
+    await this.s.overlay(id, token);
+    return await this.s.db.battleLiveConfiguration.findUnique({ where: { liveId: id } }) ?? { configured: false };
+  }
   @Get(':id/snapshot') async snapshot(@Param('id') id: string, @Query('token') token: string) {
     await this.s.overlay(id, token);
     const scene = await this.s.db.sceneConfiguration.findUnique({ where: { liveId: id } });

@@ -265,14 +265,14 @@ export default function BattleAssetsPage() {
     setDraft(future[0]);
     setFuture((f) => f.slice(1));
   }
-  async function perform(fn: () => Promise<unknown>, message: string) {
+  async function perform(fn: () => Promise<unknown>, message: string | ((result: unknown) => string)) {
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      await fn();
+      const result = await fn();
       await reload();
-      setNotice(message);
+      setNotice(typeof message === "string" ? message : message(result));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -514,6 +514,15 @@ export default function BattleAssetsPage() {
           </span>
         )}
       </div>
+      {selected?.kind === "SPRITE" && version?.status === "NEEDS_REVIEW" && (
+        <p role="status">
+          {Array.isArray(version.metadata.frames)
+            ? `${(version.metadata.frames as Frame[]).filter((item) => item.reviewRequired && !item.reviewed).length} frame cần kiểm tra. `
+            : "Đang chờ dữ liệu frame. "}
+          <button type="button" onClick={() => setTab("Frame Editor")}>Mở Frame Editor</button>{" "}
+          <button type="button" onClick={() => setTab("Published Assets")}>Xem cảnh báo Validate</button>
+        </p>
+      )}
       {tab === "Background Manager" && (
         <section className="card">
           <h2>Background 9:16</h2>
@@ -1676,6 +1685,16 @@ export default function BattleAssetsPage() {
               style={{ borderBottom: "1px solid #665", padding: 12 }}
             >
               <b>{a.name}</b> · {a.kind} · {a.status}
+              {a.versions[0]?.status === "NEEDS_REVIEW" && (
+                <p className="muted">
+                  Approve sẽ bật sau khi sửa các cảnh báo, lưu nháp và Validate đạt.
+                  {a.kind === "SPRITE" && (
+                    <button type="button" onClick={() => { setSelectedId(a.id); setTab("Frame Editor"); }}>
+                      Kiểm tra frame →
+                    </button>
+                  )}
+                </p>
+              )}
               <div className="row">
                 <button
                   disabled={
@@ -1687,7 +1706,12 @@ export default function BattleAssetsPage() {
                   onClick={() =>
                     void perform(
                       () => api(`/${a.id}/validate`, { method: "POST" }),
-                      "Đã chạy kiểm tra",
+                      (result) => {
+                        const validation = result as { passed: boolean; warnings: string[] };
+                        return validation.passed
+                          ? "Validate đạt. Hãy kiểm tra trong Simulator, sau đó bấm Approve rồi Publish."
+                          : `Validate còn ${validation.warnings.length} cảnh báo. Xem danh sách bên dưới và sửa trước khi Approve.`;
+                      },
                     )
                   }
                 >
@@ -1762,7 +1786,7 @@ export default function BattleAssetsPage() {
                       Rollback v{v.version}
                     </button>
                   )}
-                  {v.validations?.at(-1)?.warnings?.map((w, i) => (
+                  {v.validations?.[0]?.warnings?.map((w, i) => (
                     <p key={i} className="muted">
                       ⚠ {w}
                     </p>
